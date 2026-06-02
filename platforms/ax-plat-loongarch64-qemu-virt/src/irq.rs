@@ -135,6 +135,18 @@ impl IrqIf for IrqIfImpl {
                     }
                 }
             }
+        } else if let IrqType::Ex(ex_irq) = irq {
+            #[cfg(feature = "hypervisor")]
+            {
+                trace!("Leaving passthrough external IRQ {ex_irq} to guest interrupt controller");
+            }
+
+            #[cfg(not(feature = "hypervisor"))]
+            {
+                if !IRQ_HANDLER_TABLE.handle(ex_irq) {
+                    debug!("Unhandled IRQ {irq:?}");
+                }
+            }
         } else {
             if !dispatch_irq(irq.as_usize()).handled {
                 debug!("Unhandled IRQ {irq:?}");
@@ -145,8 +157,8 @@ impl IrqIf for IrqIfImpl {
             IrqType::Timer => {
                 ticlr::clear_timer_interrupt();
             }
-            IrqType::Ex(irq) => {
-                eiointc::complete_irq(irq);
+            IrqType::Ex(_irq) => {
+                eiointc::complete_irq(_irq);
             }
             _ => {}
         }
