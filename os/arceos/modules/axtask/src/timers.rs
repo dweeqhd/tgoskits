@@ -75,11 +75,28 @@ fn check_callbacks() {
 
 pub(crate) fn set_alarm_wakeup(deadline: TimeValue, task: AxTaskRef) {
     let _g = NoPreemptIrqSave::new();
+    #[cfg(target_arch = "loongarch64")]
+    let next_deadline = TIMER_LIST.with_current(|timer_list| {
+        let ticket_id = TIMER_TICKET_ID.fetch_add(1, Ordering::AcqRel);
+        task.set_timer_ticket(ticket_id);
+        timer_list.set(deadline, TaskWakeupEvent { ticket_id, task });
+        timer_list.next_deadline()
+    });
+    #[cfg(not(target_arch = "loongarch64"))]
     TIMER_LIST.with_current(|timer_list| {
         let ticket_id = TIMER_TICKET_ID.fetch_add(1, Ordering::AcqRel);
         task.set_timer_ticket(ticket_id);
         timer_list.set(deadline, TaskWakeupEvent { ticket_id, task });
-    })
+    });
+
+    #[cfg(target_arch = "loongarch64")]
+    {
+        if let Some(next_deadline) = next_deadline {
+            let deadline_ns =
+                (next_deadline.as_nanos() as u64).saturating_sub(ax_hal::time::epochoffset_nanos());
+            ax_hal::time::set_oneshot_timer(deadline_ns);
+        }
+    }
 }
 
 // SAFETY: only called in timer irq handler, so irq and preemption are
