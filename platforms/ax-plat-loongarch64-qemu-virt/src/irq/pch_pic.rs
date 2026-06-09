@@ -4,6 +4,7 @@ use crate::config::{devices::PCH_PIC_PADDR, plat::PHYS_VIRT_OFFSET};
 
 const PIC_COUNT_PER_REG: usize = 32;
 const PIC_REG_COUNT: usize = 2;
+const PIC_IRQ_COUNT: usize = PIC_COUNT_PER_REG * PIC_REG_COUNT;
 
 const PCH_PIC_MASK: usize = 0x20;
 const PCH_PIC_HTMSI_EN: usize = 0x40;
@@ -49,6 +50,9 @@ fn split_bit(irq: usize) -> (usize, u32) {
 }
 
 pub fn enable_irq(irq: usize) {
+    if irq >= PIC_IRQ_COUNT {
+        return;
+    }
     let (offset, bit) = split_bit(irq);
 
     let addr = PCH_PIC_MASK + offset;
@@ -61,6 +65,9 @@ pub fn enable_irq(irq: usize) {
 }
 
 pub fn disable_irq(irq: usize) {
+    if irq >= PIC_IRQ_COUNT {
+        return;
+    }
     let (offset, bit) = split_bit(irq);
     let addr = PCH_PIC_MASK + offset;
     write_w(addr, read_w(addr) | bit);

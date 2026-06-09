@@ -66,6 +66,71 @@ fn init_mmu() {
 
 const BOOT_TO_VIRT: usize = PHYS_VIRT_OFFSET - PHYS_BOOT_OFFSET;
 
+const EFI_SYSTEM_TABLE_SIGNATURE: u64 = 0x5453_5953_2049_4249;
+const DEVICE_TREE_GUID: [u8; 16] = [
+    0xd5, 0x21, 0xb6, 0xb1, 0x9c, 0xf1, 0xa5, 0x41, 0x83, 0x0b, 0xd9, 0x15, 0x2c, 0x69, 0xaa, 0xe0,
+];
+
+#[repr(C)]
+struct EfiTableHeader {
+    signature: u64,
+    revision: u32,
+    header_size: u32,
+    crc32: u32,
+    reserved: u32,
+}
+
+#[repr(C)]
+struct EfiSystemTable {
+    header: EfiTableHeader,
+    firmware_vendor: u64,
+    firmware_revision: u32,
+    console_in_handle: u64,
+    console_in: u64,
+    console_out_handle: u64,
+    console_out: u64,
+    stderr_handle: u64,
+    stderr: u64,
+    runtime_services: u64,
+    boot_services: u64,
+    number_of_table_entries: u64,
+    configuration_table: u64,
+}
+
+#[repr(C)]
+struct EfiConfigurationTable {
+    vendor_guid: [u8; 16],
+    vendor_table: u64,
+}
+
+unsafe fn loongarch_qemu_fdt_from_systab(system_table_paddr: usize) -> usize {
+    if system_table_paddr == 0 {
+        return 0;
+    }
+
+    let system_table = (system_table_paddr + PHYS_BOOT_OFFSET) as *const EfiSystemTable;
+    let system_table = unsafe { &*system_table };
+    if system_table.header.signature != EFI_SYSTEM_TABLE_SIGNATURE {
+        return 0;
+    }
+
+    let entries = system_table.number_of_table_entries as usize;
+    let table_paddr = system_table.configuration_table as usize;
+    if entries == 0 || table_paddr == 0 {
+        return 0;
+    }
+
+    let table = (table_paddr + PHYS_BOOT_OFFSET) as *const EfiConfigurationTable;
+    for i in 0..entries {
+        let entry = unsafe { &*table.add(i) };
+        if entry.vendor_guid == DEVICE_TREE_GUID {
+            return entry.vendor_table as usize;
+        }
+    }
+
+    0
+}
+
 /// The earliest entry point for the primary CPU.
 ///
 /// We can't use bl to jump to higher address, so we use jirl to jump to higher address.
@@ -100,6 +165,8 @@ unsafe extern "C" fn __boot_start() -> ! {
         jirl        $zero, $t0, 0
 
     1:
+        move        $s0, $a2            # QEMU LoongArch direct boot passes EFI systab in a2.
+
         # Setup Stack
         la.local    $sp, {boot_stack}
         li.d        $t0, {boot_stack_size}
@@ -114,8 +181,10 @@ unsafe extern "C" fn __boot_start() -> ! {
         li.d        $t0, {boot_to_virt}
         add.d       $sp, $sp, $t0
 
+        move        $a0, $s0
+        bl          {loongarch_qemu_fdt_from_systab}
+        move        $a1, $a0
         csrrd       $a0, 0x20           # cpuid
-        li.d        $a1, 0              # TODO: parse dtb
         la.abs      $t0, {entry}
         li.d        $ra, 0
         jirl        $zero, $t0, 0",
@@ -128,6 +197,7 @@ unsafe extern "C" fn __boot_start() -> ! {
         enable_fp_simd = sym enable_fp_simd,
         init_boot_page_table = sym init_boot_page_table,
         init_mmu = sym init_mmu,
+        loongarch_qemu_fdt_from_systab = sym loongarch_qemu_fdt_from_systab,
         entry = sym ax_plat::call_main,
     )
 }
