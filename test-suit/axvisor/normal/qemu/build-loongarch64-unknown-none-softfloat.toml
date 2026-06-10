@@ -8,4 +8,4 @@ features = [
 log = "Info"
 max_cpu_num = 1
 target = "loongarch64-unknown-none-softfloat"
-vm_configs = []
+vm_configs = ["os/axvisor/configs/vms/qemu/loongarch64/linux-rootfs-smp1.toml"]
