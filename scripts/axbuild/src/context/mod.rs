@@ -20,8 +20,6 @@ use ostool::{
     },
 };
 
-use crate::support::process::ProcessExt;
-
 mod arch;
 mod resolve;
 mod snapshot;
@@ -158,7 +156,6 @@ impl AppContext {
                 qemu,
                 debug: self.debug,
                 dtb_dump: false,
-                show_output: true,
             })),
         )
         .await
