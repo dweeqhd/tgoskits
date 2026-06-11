@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.6.1...starry-kernel-v0.6.2) - 2026-06-11
+
+### Other
+
+- *(starry)* rename axnet crate references to ax-net ([#1220](https://github.com/rcore-os/tgoskits/pull/1220))
+- *(ax-net)* unify network stack into single net/ax-net crate, r… ([#1203](https://github.com/rcore-os/tgoskits/pull/1203))
+
 ## [0.6.1](https://github.com/rcore-os/tgoskits/compare/starry-kernel-v0.6.0...starry-kernel-v0.6.1) - 2026-06-11
 
 ### Added

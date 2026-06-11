@@ -511,7 +511,7 @@ dependencies = [
 
 [[package]]
 name = "ax-api"
-version = "0.5.19"
+version = "0.6.0"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -630,7 +630,7 @@ dependencies = [
 
 [[package]]
 name = "ax-display"
-version = "0.5.17"
+version = "0.5.18"
 dependencies = [
  "ax-lazyinit",
  "ax-sync",
@@ -640,7 +640,7 @@ dependencies = [
 
 [[package]]
 name = "ax-dma"
-version = "0.6.2"
+version = "0.6.3"
 dependencies = [
  "ax-alloc",
  "ax-allocator",
@@ -725,7 +725,7 @@ dependencies = [
 
 [[package]]
 name = "ax-feat"
-version = "0.5.19"
+version = "0.5.20"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -747,7 +747,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs"
-version = "0.5.17"
+version = "0.5.18"
 dependencies = [
  "ax-cap-access",
  "ax-errno 0.6.0",
@@ -775,7 +775,7 @@ dependencies = [
 
 [[package]]
 name = "ax-fs-ng"
-version = "0.5.18"
+version = "0.5.19"
 dependencies = [
  "ax-alloc",
  "ax-errno 0.6.0",
@@ -819,7 +819,7 @@ dependencies = [
 
 [[package]]
 name = "ax-hal"
-version = "0.5.18"
+version = "0.5.19"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -849,7 +849,7 @@ version = "0.3.7"
 
 [[package]]
 name = "ax-input"
-version = "0.5.17"
+version = "0.5.18"
 dependencies = [
  "ax-lazyinit",
  "ax-sync",
@@ -872,7 +872,7 @@ dependencies = [
 
 [[package]]
 name = "ax-ipi"
-version = "0.5.17"
+version = "0.5.18"
 dependencies = [
  "ax-config",
  "ax-hal",
@@ -906,7 +906,7 @@ version = "0.4.8"
 
 [[package]]
 name = "ax-libc"
-version = "0.5.18"
+version = "0.5.19"
 dependencies = [
  "ax-driver",
  "ax-errno 0.6.0",
@@ -957,7 +957,7 @@ dependencies = [
 
 [[package]]
 name = "ax-mm"
-version = "0.5.18"
+version = "0.5.19"
 dependencies = [
  "ax-alloc",
  "ax-errno 0.6.0",
@@ -972,7 +972,7 @@ dependencies = [
 
 [[package]]
 name = "ax-net"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "async-channel",
  "async-trait",
@@ -1061,7 +1061,7 @@ dependencies = [
 
 [[package]]
 name = "ax-plat-loongarch64-qemu-virt"
-version = "0.5.13"
+version = "0.5.14"
 dependencies = [
  "ax-config-macros",
  "ax-cpu",
@@ -1130,7 +1130,7 @@ dependencies = [
 
 [[package]]
 name = "ax-posix-api"
-version = "0.5.19"
+version = "0.5.20"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -1160,7 +1160,7 @@ dependencies = [
 
 [[package]]
 name = "ax-runtime"
-version = "0.6.2"
+version = "0.7.0"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -1203,7 +1203,7 @@ dependencies = [
 
 [[package]]
 name = "ax-std"
-version = "0.5.18"
+version = "0.5.19"
 dependencies = [
  "ax-alloc",
  "ax-api",
@@ -1223,7 +1223,7 @@ dependencies = [
 
 [[package]]
 name = "ax-sync"
-version = "0.5.18"
+version = "0.5.19"
 dependencies = [
  "ax-kspin",
  "ax-lockdep",
@@ -1234,7 +1234,7 @@ dependencies = [
 
 [[package]]
 name = "ax-task"
-version = "0.5.19"
+version = "0.5.20"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -1310,7 +1310,7 @@ dependencies = [
 
 [[package]]
 name = "axbuild"
-version = "0.4.11"
+version = "0.4.12"
 dependencies = [
  "addr2line 0.26.1",
  "anyhow",
@@ -1463,7 +1463,7 @@ version = "0.1.0"
 
 [[package]]
 name = "axplat-dyn"
-version = "0.7.2"
+version = "0.7.3"
 dependencies = [
  "anyhow",
  "ax-config-macros",
@@ -1560,7 +1560,7 @@ dependencies = [
 
 [[package]]
 name = "axvisor"
-version = "0.5.11"
+version = "0.5.12"
 dependencies = [
  "anyhow",
  "ax-driver",
@@ -1589,7 +1589,7 @@ dependencies = [
 
 [[package]]
 name = "axvm"
-version = "0.5.13"
+version = "0.5.14"
 dependencies = [
  "aarch64-cpu-ext",
  "arm-gic-driver",
@@ -1641,7 +1641,7 @@ dependencies = [
 
 [[package]]
 name = "axvmconfig"
-version = "0.7.0"
+version = "0.7.1"
 dependencies = [
  "ax-errno 0.6.0",
  "axvm-types",
@@ -7266,7 +7266,7 @@ dependencies = [
 
 [[package]]
 name = "sg2002-tpu"
-version = "0.1.5"
+version = "0.1.6"
 dependencies = [
  "ax-dma",
  "ax-errno 0.6.0",
@@ -7499,7 +7499,7 @@ dependencies = [
 
 [[package]]
 name = "someboot"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "aarch64-cpu-ext",
@@ -7543,7 +7543,7 @@ dependencies = [
 
 [[package]]
 name = "somehal"
-version = "0.6.10"
+version = "0.6.11"
 dependencies = [
  "aarch64-cpu 11.2.0",
  "anyhow",
@@ -7628,7 +7628,7 @@ dependencies = [
 
 [[package]]
 name = "starry-kernel"
-version = "0.6.1"
+version = "0.6.2"
 dependencies = [
  "ax-alloc",
  "ax-config",
@@ -7755,7 +7755,7 @@ dependencies = [
 
 [[package]]
 name = "starryos"
-version = "0.5.15"
+version = "0.5.16"
 dependencies = [
  "anyhow",
  "ax-driver",

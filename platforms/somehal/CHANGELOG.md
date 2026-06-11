@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.11](https://github.com/rcore-os/tgoskits/compare/somehal-v0.6.10...somehal-v0.6.11) - 2026-06-11
+
+### Fixed
+
+- *(loongarch64)* ack timer irq before dispatch ([#1222](https://github.com/rcore-os/tgoskits/pull/1222))
+
 ## [0.6.10](https://github.com/rcore-os/tgoskits/compare/somehal-v0.6.9...somehal-v0.6.10) - 2026-06-11
 
 ### Added

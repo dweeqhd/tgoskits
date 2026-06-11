@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.1](https://github.com/rcore-os/tgoskits/compare/someboot-v0.2.0...someboot-v0.2.1) - 2026-06-11
+
+### Other
+
+- *(someboot)* share linker script fragments ([#1218](https://github.com/rcore-os/tgoskits/pull/1218))
+
 ## [0.2.0](https://github.com/rcore-os/tgoskits/compare/someboot-v0.1.17...someboot-v0.2.0) - 2026-06-11
 
 ### Added

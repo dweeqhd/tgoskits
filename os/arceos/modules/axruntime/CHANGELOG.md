@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.6.2...ax-runtime-v0.7.0) - 2026-06-11
+
+### Other
+
+- *(ax-net)* unify network stack into single net/ax-net crate, r… ([#1203](https://github.com/rcore-os/tgoskits/pull/1203))
+
 ## [0.6.2](https://github.com/rcore-os/tgoskits/compare/ax-runtime-v0.6.1...ax-runtime-v0.6.2) - 2026-06-11
 
 ### Other
