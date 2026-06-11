@@ -60,6 +60,7 @@ jobs:
           CURRENT_RUN_NUMBER: ${{ github.run_number }}
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
         run: |
           set -uo pipefail
@@ -176,6 +177,7 @@ jobs:
         env:
           EVENT_NAME: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
           MANUAL_TARGET: ${{ github.event.inputs.container_target }}
           FILTER_CI_CHECKS: ${{ steps.filter.outputs.ci_checks }}
           FILTER_BASE_CONTAINER_PUBLISH: ${{ steps.filter.outputs.base_container_publish }}
@@ -183,6 +185,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           repository="$(printf '%s' "$GITHUB_REPOSITORY" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+          if [ "$EVENT_NAME" = "pull_request" ] && [ "$REPOSITORY_OWNER" != "rcore-os" ]; then
+            repository="rcore-os/tgoskits"
+          fi
           base_container_image="ghcr.io/${repository}-container"
           axvisor_lvz_container_image="ghcr.io/${repository}-container-axvisor-lvz"
           skip_duplicate_push_ci=false
