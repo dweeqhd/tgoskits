@@ -1,6 +1,6 @@
 use ax_errno::{AxResult, ax_err};
-use ax_kspin::SpinNoIrq as Mutex;
-use axdevice_base::{AccessWidth, BaseDeviceOps, EmuDeviceType, Port, PortRange};
+use ax_kspin::SpinNoPreempt as Mutex;
+use axdevice_base::{AccessWidth, BaseDeviceOps, EmuDeviceType, IrqLine, Port, PortRange};
 
 use crate::host;
 
@@ -111,18 +111,26 @@ impl SerialState {
             IIR_FIFO_16550A | IIR_NO_INTERRUPT
         }
     }
+
+    fn rx_irq_pending(&self) -> bool {
+        self.ier & IER_RX_AVAILABLE != 0 && self.rx_len != 0
+    }
 }
 
 /// Minimal 16550-compatible COM1 UART backed by the host console.
 pub struct EmulatedSerialPort {
     state: Mutex<SerialState>,
+    irq_asserted: Mutex<bool>,
+    irq: IrqLine,
 }
 
 impl EmulatedSerialPort {
     /// Create a new COM1 UART.
-    pub const fn new() -> Self {
+    pub const fn new(irq: IrqLine) -> Self {
         Self {
             state: Mutex::new(SerialState::new()),
+            irq_asserted: Mutex::new(false),
+            irq,
         }
     }
 
@@ -134,17 +142,29 @@ impl EmulatedSerialPort {
         }
     }
 
-    /// Poll host console input and return whether the UART should assert IRQ4.
-    pub fn poll_irq(&self) -> bool {
-        let mut state = self.state.lock();
-        Self::poll_host_input(&mut state);
-        state.ier & IER_RX_AVAILABLE != 0 && state.rx_len != 0
-    }
-}
+    fn sync_irq_state(&self) -> AxResult {
+        let mut asserted = self.irq_asserted.lock();
+        let pending = self.state.lock().rx_irq_pending();
+        if pending == *asserted {
+            return Ok(());
+        }
 
-impl Default for EmulatedSerialPort {
-    fn default() -> Self {
-        Self::new()
+        if pending {
+            self.irq.raise()?;
+        } else {
+            self.irq.lower()?;
+        }
+        *asserted = pending;
+        Ok(())
+    }
+
+    /// Poll host console input and update the COM1 receive interrupt line.
+    pub fn poll(&self) -> AxResult {
+        {
+            let mut state = self.state.lock();
+            Self::poll_host_input(&mut state);
+        }
+        self.sync_irq_state()
     }
 }
 
@@ -162,22 +182,25 @@ impl BaseDeviceOps<PortRange> for EmulatedSerialPort {
             return ax_err!(Unsupported, "x86 serial only supports byte port reads");
         }
 
-        let mut state = self.state.lock();
-        Self::poll_host_input(&mut state);
-        let offset = port.0 - COM1_BASE;
-        let value = match offset {
-            REG_RBR_THR_DLL if state.dlab() => state.dll,
-            REG_RBR_THR_DLL => state.pop_rx().unwrap_or(0),
-            REG_IER_DLM if state.dlab() => state.dlm,
-            REG_IER_DLM => state.ier,
-            REG_IIR_FCR => state.iir(),
-            REG_LCR => state.lcr,
-            REG_MCR => state.mcr,
-            REG_LSR => state.lsr(),
-            REG_MSR => MSR_DCD | MSR_DSR | MSR_CTS,
-            REG_SCR => state.scr,
-            _ => return ax_err!(Unsupported, "unsupported x86 serial read port"),
+        let value = {
+            let mut state = self.state.lock();
+            Self::poll_host_input(&mut state);
+            let offset = port.0 - COM1_BASE;
+            match offset {
+                REG_RBR_THR_DLL if state.dlab() => state.dll,
+                REG_RBR_THR_DLL => state.pop_rx().unwrap_or(0),
+                REG_IER_DLM if state.dlab() => state.dlm,
+                REG_IER_DLM => state.ier,
+                REG_IIR_FCR => state.iir(),
+                REG_LCR => state.lcr,
+                REG_MCR => state.mcr,
+                REG_LSR => state.lsr(),
+                REG_MSR => MSR_DCD | MSR_DSR | MSR_CTS,
+                REG_SCR => state.scr,
+                _ => return ax_err!(Unsupported, "unsupported x86 serial read port"),
+            }
         };
+        self.sync_irq_state()?;
         Ok(value as usize)
     }
 
@@ -186,26 +209,28 @@ impl BaseDeviceOps<PortRange> for EmulatedSerialPort {
             return ax_err!(Unsupported, "x86 serial only supports byte port writes");
         }
 
-        let mut state = self.state.lock();
-        let offset = port.0 - COM1_BASE;
-        let value = val as u8;
-        match offset {
-            REG_RBR_THR_DLL if state.dlab() => state.dll = value,
-            REG_RBR_THR_DLL => host::write_bytes(&[value]),
-            REG_IER_DLM if state.dlab() => state.dlm = value,
-            REG_IER_DLM => state.ier = value & 0x0f,
-            REG_IIR_FCR => {
-                state.fcr = value;
-                if value & (1 << 1) != 0 {
-                    state.clear_rx();
+        {
+            let mut state = self.state.lock();
+            let offset = port.0 - COM1_BASE;
+            let value = val as u8;
+            match offset {
+                REG_RBR_THR_DLL if state.dlab() => state.dll = value,
+                REG_RBR_THR_DLL => host::write_bytes(&[value]),
+                REG_IER_DLM if state.dlab() => state.dlm = value,
+                REG_IER_DLM => state.ier = value & 0x0f,
+                REG_IIR_FCR => {
+                    state.fcr = value;
+                    if value & (1 << 1) != 0 {
+                        state.clear_rx();
+                    }
                 }
+                REG_LCR => state.lcr = value,
+                REG_MCR => state.mcr = value,
+                REG_LSR | REG_MSR => {}
+                REG_SCR => state.scr = value,
+                _ => return ax_err!(Unsupported, "unsupported x86 serial write port"),
             }
-            REG_LCR => state.lcr = value,
-            REG_MCR => state.mcr = value,
-            REG_LSR | REG_MSR => {}
-            REG_SCR => state.scr = value,
-            _ => return ax_err!(Unsupported, "unsupported x86 serial write port"),
         }
-        Ok(())
+        self.sync_irq_state()
     }
 }
