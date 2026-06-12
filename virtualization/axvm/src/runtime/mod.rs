@@ -17,7 +17,7 @@ mod ivc;
 
 pub(crate) mod vcpus;
 #[cfg(target_arch = "x86_64")]
-mod x86_irq;
+pub(crate) mod x86_irq;
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 

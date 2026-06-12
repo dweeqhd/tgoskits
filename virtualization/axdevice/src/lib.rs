@@ -44,6 +44,4 @@ pub use factory::{
     register_builtin_factories,
 };
 pub use registration::{DeviceBundle, DeviceRegistration, PollableDeviceOps};
-#[cfg(target_arch = "x86_64")]
-pub use x86_vlapic::IoApicInterrupt;
 // pub use virtio_dev::*;

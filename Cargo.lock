@@ -1367,7 +1367,6 @@ dependencies = [
  "cfg-if",
  "log",
  "riscv_vplic",
- "x86_vlapic",
 ]
 
 [[package]]
