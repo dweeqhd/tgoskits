@@ -22,7 +22,7 @@ use ax_errno::AxResult;
 use axdevice_base::{
     AccessWidth, BaseDeviceOps, DeviceAddrRange, EmuDeviceType, SysRegAddr, SysRegAddrRange,
 };
-use log::info;
+use log::{info, warn};
 
 use crate::host;
 
@@ -55,10 +55,17 @@ impl BaseDeviceOps<SysRegAddrRange> for SysCntpTvalEl0 {
         info!("Write to emulator register: {addr:?}, value: {val}");
         let now = host::current_time_nanos();
         info!("Current time: {}, deadline: {}", now, now + val as u64);
+        let vm_id = host::current_vm_id();
+        let vcpu_id = host::current_vcpu_id();
         host::register_timer(
             Duration::from_nanos(now + val as u64),
-            Box::new(|_| {
-                crate::api_reexp::hardware_inject_virtual_interrupt(30);
+            Box::new(move |_| {
+                if let Err(err) = host::queue_virtual_interrupt(vm_id, vcpu_id, 30) {
+                    warn!(
+                        "failed to queue virtual timer interrupt for VM[{vm_id}] VCpu[{vcpu_id}]: \
+                         {err:?}"
+                    );
+                }
             }),
         );
         Ok(())

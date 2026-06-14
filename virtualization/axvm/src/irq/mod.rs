@@ -21,6 +21,8 @@ use axdevice::IrqResolver;
 use axdevice_base::{InterruptTriggerMode, IrqLine, IrqLineId, IrqSink};
 use axvm_types::{InterruptVector, VCpuId, VMInterruptMode};
 
+#[cfg(any(target_arch = "aarch64", test))]
+pub(crate) mod aarch64;
 #[cfg(target_arch = "riscv64")]
 pub(crate) mod riscv;
 #[cfg(target_arch = "x86_64")]
@@ -30,7 +32,7 @@ pub(crate) mod x86;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct PendingInterrupt {
     /// Guest interrupt vector.
-    pub vector: InterruptVector,
+    pub vector: usize,
     /// Trigger mode selected by the interrupt controller.
     pub trigger: InterruptTriggerMode,
 }

@@ -213,6 +213,7 @@ mod aarch64 {
     use arm_vcpu::host::ArmVcpuHostIf;
     use arm_vgic::host::ArmVgicHostIf;
     use ax_crate_interface::impl_interface;
+    use ax_errno::AxResult;
     use ax_memory_addr::{PhysAddr, VirtAddr};
 
     use crate::host::{HostCpu, HostMemory, HostTime, default_host, gic};
@@ -221,8 +222,8 @@ mod aarch64 {
 
     #[impl_interface]
     impl ArmVcpuHostIf for ArmVcpuHostIfImpl {
-        fn hardware_inject_virtual_interrupt(vector: u8) {
-            gic::inject_interrupt(vector as usize);
+        fn hardware_inject_virtual_interrupt(vector: usize) -> AxResult {
+            gic::inject_interrupt(vector)
         }
 
         fn fetch_irq() -> usize {
@@ -258,6 +259,10 @@ mod aarch64 {
             crate::current_vcpu_id().expect("current AArch64 vCPU is not set")
         }
 
+        fn current_vm_id() -> usize {
+            crate::current_vm_id().expect("current AArch64 VM is not set")
+        }
+
         fn current_time_nanos() -> u64 {
             default_host().monotonic_time().as_nanos() as u64
         }
@@ -285,8 +290,12 @@ mod aarch64 {
             gic::host_gicr_base()
         }
 
-        fn hardware_inject_virtual_interrupt(vector: u8) {
-            gic::inject_interrupt(vector as usize);
+        fn hardware_inject_virtual_interrupt(vector: usize) -> AxResult {
+            gic::inject_interrupt(vector)
+        }
+
+        fn queue_virtual_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxResult {
+            crate::runtime::vcpus::queue_interrupt(vm_id, vcpu_id, vector)
         }
     }
 }
