@@ -17,6 +17,8 @@ mod ivc;
 
 #[cfg(target_arch = "aarch64")]
 pub(crate) mod aarch64_irq;
+#[cfg(target_arch = "loongarch64")]
+pub(crate) mod loongarch_irq;
 pub(crate) mod vcpus;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod x86_irq;

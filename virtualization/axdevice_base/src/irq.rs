@@ -10,6 +10,14 @@ use axvm_types::{InterruptTriggerMode, IrqLineId};
 /// Implementations route the line operation to a VM-specific interrupt
 /// controller backend.
 pub trait IrqSink: Send + Sync {
+    /// Validates whether `line` supports the requested trigger mode.
+    ///
+    /// Backends with narrower capabilities can reject incompatible device
+    /// lines while the device is being constructed.
+    fn validate_line(&self, _line: IrqLineId, _trigger: InterruptTriggerMode) -> AxResult {
+        Ok(())
+    }
+
     /// Sets whether a level-triggered interrupt line is asserted.
     fn set_level(&self, line: IrqLineId, asserted: bool) -> AxResult;
 
