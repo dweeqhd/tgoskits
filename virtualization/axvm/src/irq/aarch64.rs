@@ -42,7 +42,6 @@ struct Aarch64InterruptState {
 }
 
 pub(crate) struct Aarch64InterruptBackend {
-    vcpu_count: usize,
     state: Mutex<Aarch64InterruptState>,
 }
 
@@ -55,7 +54,6 @@ impl Aarch64InterruptBackend {
             );
         }
         Ok(Self {
-            vcpu_count,
             state: Mutex::new(Aarch64InterruptState {
                 asserted: vec![false; SPECIAL_INTERRUPT_START],
                 pending: VecDeque::new(),
@@ -91,15 +89,6 @@ impl Aarch64InterruptBackend {
         // The current IRQ-line model has no affinity field. Preserve the
         // existing single-target behavior by routing both PPIs and SPIs to the
         // bootstrap vCPU until the configuration model can describe affinity.
-        if BSP_VCPU_ID >= self.vcpu_count {
-            return ax_err!(
-                BadState,
-                format_args!(
-                    "AArch64 IRQ line {} targets missing bootstrap vCPU {}",
-                    line.0, BSP_VCPU_ID
-                )
-            );
-        }
         Ok(BSP_VCPU_ID)
     }
 
@@ -266,9 +255,13 @@ mod platform {
                     .checked_add(index)
                     .ok_or(AxError::InvalidInput)?;
 
-                bundle.push(DeviceRegistration::Mmio(Arc::new(
-                    arm_vgic::v3::vgicr::VGicR::new(address.into(), Some(config.length), pcpu_id),
-                )));
+                #[allow(clippy::arc_with_non_send_sync)]
+                let device = Arc::new(arm_vgic::v3::vgicr::VGicR::new(
+                    address.into(),
+                    Some(config.length),
+                    pcpu_id,
+                ));
+                bundle.push(DeviceRegistration::Mmio(device));
             }
             Ok(bundle)
         }
@@ -296,13 +289,12 @@ mod platform {
                     )
                 );
             }
-            Ok(
-                DeviceRegistration::Mmio(Arc::new(arm_vgic::v3::vgicd::VGicD::new(
-                    config.base_gpa.into(),
-                    Some(config.length),
-                )))
-                .into(),
-            )
+            #[allow(clippy::arc_with_non_send_sync)]
+            let device = Arc::new(arm_vgic::v3::vgicd::VGicD::new(
+                config.base_gpa.into(),
+                Some(config.length),
+            ));
+            Ok(DeviceRegistration::Mmio(device).into())
         }
     }
 
@@ -328,15 +320,14 @@ mod platform {
                     )
                 );
             };
-            Ok(
-                DeviceRegistration::Mmio(Arc::new(arm_vgic::v3::gits::Gits::new(
-                    config.base_gpa.into(),
-                    Some(config.length),
-                    PhysAddr::from_usize(*host_gits_base),
-                    false,
-                )))
-                .into(),
-            )
+            #[allow(clippy::arc_with_non_send_sync)]
+            let device = Arc::new(arm_vgic::v3::gits::Gits::new(
+                config.base_gpa.into(),
+                Some(config.length),
+                PhysAddr::from_usize(*host_gits_base),
+                false,
+            ));
+            Ok(DeviceRegistration::Mmio(device).into())
         }
     }
 
