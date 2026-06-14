@@ -23,6 +23,8 @@ use axvm_types::{InterruptVector, VCpuId, VMInterruptMode};
 
 #[cfg(any(target_arch = "aarch64", test))]
 pub(crate) mod aarch64;
+#[cfg(any(target_arch = "loongarch64", test))]
+pub(crate) mod loongarch;
 #[cfg(target_arch = "riscv64")]
 pub(crate) mod riscv;
 #[cfg(target_arch = "x86_64")]
@@ -205,10 +207,9 @@ impl Default for InterruptFabric {
 
 impl IrqResolver for InterruptFabric {
     fn resolve_irq(&self, line: usize, trigger: InterruptTriggerMode) -> AxResult<IrqLine> {
-        Ok(IrqLine::new(
-            IrqLineId(line),
-            trigger,
-            self.sink_for_line(line)?.clone(),
-        ))
+        let line = IrqLineId(line);
+        let sink = self.sink_for_line(line.0)?;
+        sink.validate_line(line, trigger)?;
+        Ok(IrqLine::new(line, trigger, sink.clone()))
     }
 }

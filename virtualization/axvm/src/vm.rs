@@ -248,8 +248,17 @@ impl AxVM {
                 inner_mut.config.phys_cpu_ls.cpu_num(),
             )?
         };
+        #[cfg(target_arch = "loongarch64")]
+        let interrupt_fabric = {
+            let inner_mut = self.inner_mut.lock();
+            crate::irq::loongarch::configure(
+                interrupt_mode,
+                inner_mut.config.phys_cpu_ls.cpu_num(),
+            )?
+        };
         #[cfg(not(any(
             target_arch = "aarch64",
+            target_arch = "loongarch64",
             target_arch = "riscv64",
             target_arch = "x86_64"
         )))]
@@ -643,6 +652,8 @@ impl AxVM {
                 crate::runtime::vcpus::inject_pending_interrupts(self.id(), vcpu_id, &vcpu);
                 #[cfg(target_arch = "aarch64")]
                 crate::runtime::aarch64_irq::drain_routed_irqs(self, &vcpu);
+                #[cfg(target_arch = "loongarch64")]
+                crate::runtime::loongarch_irq::drain_routed_irqs(self, &vcpu);
                 #[cfg(target_arch = "x86_64")]
                 crate::runtime::x86_irq::drain_routed_irqs(self, &vcpu);
 
