@@ -239,7 +239,20 @@ impl AxVM {
                 inner_mut.config.emu_devices(),
             )?
         };
-        #[cfg(not(any(target_arch = "riscv64", target_arch = "x86_64")))]
+        #[cfg(target_arch = "aarch64")]
+        let interrupt_fabric = {
+            let inner_mut = self.inner_mut.lock();
+            crate::irq::aarch64::configure(
+                &mut factories,
+                interrupt_mode,
+                inner_mut.config.phys_cpu_ls.cpu_num(),
+            )?
+        };
+        #[cfg(not(any(
+            target_arch = "aarch64",
+            target_arch = "riscv64",
+            target_arch = "x86_64"
+        )))]
         let interrupt_fabric = InterruptFabric::new(interrupt_mode);
 
         self.init_with_factories(&factories, interrupt_fabric)
@@ -628,6 +641,8 @@ impl AxVM {
         let exit_reason = vcpu.with_current_cpu_set(|| -> AxResult<AxVCpuExitReason> {
             loop {
                 crate::runtime::vcpus::inject_pending_interrupts(self.id(), vcpu_id, &vcpu);
+                #[cfg(target_arch = "aarch64")]
+                crate::runtime::aarch64_irq::drain_routed_irqs(self, &vcpu);
                 #[cfg(target_arch = "x86_64")]
                 crate::runtime::x86_irq::drain_routed_irqs(self, &vcpu);
 

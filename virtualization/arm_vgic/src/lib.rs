@@ -53,6 +53,7 @@ mod api_reexp {
 #[allow(dead_code)]
 #[cfg(not(target_arch = "aarch64"))]
 mod api_reexp {
+    use ax_errno::AxResult;
     use ax_memory_addr::{PhysAddr, pa};
 
     pub fn read_vgicd_iidr() -> u32 {
@@ -71,5 +72,7 @@ mod api_reexp {
         pa!(0)
     }
 
-    pub fn hardware_inject_virtual_interrupt(_vector: u8) {}
+    pub fn hardware_inject_virtual_interrupt(_vector: usize) -> AxResult {
+        Ok(())
+    }
 }

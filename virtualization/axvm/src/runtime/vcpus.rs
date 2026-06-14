@@ -102,6 +102,13 @@ impl VMVCpus {
             .unwrap_or_default()
     }
 
+    fn requeue_pending_interrupts(&self, vcpu_id: usize, mut retry: Vec<usize>) {
+        let mut pending = self.pending_interrupts.lock();
+        let queued = pending.entry(vcpu_id).or_default();
+        retry.append(queued);
+        *queued = retry;
+    }
+
     /// Blocks the current thread on the wait queue associated with the VCpus of this VM.
     fn wait(&self) {
         self.wait_queue.wait()
@@ -228,13 +235,21 @@ pub(crate) fn inject_pending_interrupts(vm_id: usize, vcpu_id: usize, vcpu: &VCp
         return;
     };
 
-    for vector in vm_vcpus.drain_pending_interrupts(vcpu_id) {
+    let mut pending = vm_vcpus.drain_pending_interrupts(vcpu_id).into_iter();
+    while let Some(vector) = pending.next() {
         trace!("Injecting queued interrupt {vector:#x} into VM[{vm_id}] VCpu[{vcpu_id}]");
         if let Err(err) = vcpu.inject_interrupt(vector) {
             warn!(
                 "Failed to inject queued interrupt {vector:#x} into VM[{vm_id}] VCpu[{vcpu_id}]: \
                  {err:?}"
             );
+            if err == ax_errno::AxError::WouldBlock {
+                let mut retry = Vec::with_capacity(1 + pending.len());
+                retry.push(vector);
+                retry.extend(pending);
+                vm_vcpus.requeue_pending_interrupts(vcpu_id, retry);
+            }
+            break;
         }
     }
 }

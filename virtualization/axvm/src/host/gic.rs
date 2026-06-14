@@ -4,9 +4,12 @@ use arm_gic_driver::v3::{
     ICH_ELRSR_EL2, ICH_HCR_EL2, ICH_LR_EL2, ICH_VTR_EL2, ReadWriteable, Readable, ich_lr_el2_get,
     ich_lr_el2_write,
 };
+use ax_errno::{AxError, AxResult, ax_err};
 use ax_memory_addr::{PhysAddr, VirtAddr};
 
 use super::{HostMemory, arceos, default_host};
+
+const SPECIAL_INTERRUPT_START: usize = 1020;
 
 fn with_gic<T>(f: impl FnOnce(&mut rdif_intc::Intc) -> T) -> T {
     let mut gic = rdrive::get_one::<rdif_intc::Intc>()
@@ -16,42 +19,71 @@ fn with_gic<T>(f: impl FnOnce(&mut rdif_intc::Intc) -> T) -> T {
     f(&mut gic)
 }
 
-pub(crate) fn inject_interrupt(irq: usize) {
+pub(crate) fn inject_interrupt(irq: usize) -> AxResult {
+    if irq >= SPECIAL_INTERRUPT_START {
+        return ax_err!(
+            InvalidInput,
+            format_args!(
+                "invalid AArch64 virtual interrupt {irq}; valid IDs are \
+                 0..{SPECIAL_INTERRUPT_START}"
+            )
+        );
+    }
+
     debug!("Injecting virtual interrupt: {irq}");
 
-    with_gic(|gic| {
-        if let Some(gic) = gic.typed_mut::<arm_gic_driver::v2::Gic>() {
-            use arm_gic_driver::{
-                IntId,
-                v2::{VirtualInterruptConfig, VirtualInterruptState},
-            };
+    let driver = rdrive::get_one::<rdif_intc::Intc>().ok_or(AxError::NoSuchDevice)?;
+    let mut gic = driver.lock().map_err(|_| AxError::ResourceBusy)?;
 
-            let gich = gic.hypervisor_interface().expect("failed to get GICH");
-            gich.enable();
-            gich.set_virtual_interrupt(
+    if let Some(gic) = gic.typed_mut::<arm_gic_driver::v2::Gic>() {
+        use arm_gic_driver::{
+            IntId,
+            v2::{VirtualInterruptConfig, VirtualInterruptState},
+        };
+
+        let Some(gich) = gic.hypervisor_interface() else {
+            return ax_err!(NoSuchDevice, "GICv2 hypervisor interface is unavailable");
+        };
+        let intid = unsafe { IntId::raw(irq as u32) };
+        let lr_count = gich.get_list_register_count();
+        for index in 0..lr_count {
+            let current = gich.get_virtual_interrupt(index);
+            if current.virtual_id == intid
+                && !matches!(current.state, VirtualInterruptState::Invalid)
+            {
+                debug!("Virtual interrupt {irq} already pending/active in LR{index}, skipping");
+                return Ok(());
+            }
+        }
+
+        let Some(free_lr) = (0..lr_count).find(|index| gich.is_list_register_empty(*index)) else {
+            warn!("No free GICv2 list register for virtual interrupt {irq}; deferring injection");
+            return Err(AxError::WouldBlock);
+        };
+
+        gich.enable();
+        gich.set_virtual_interrupt(
+            free_lr,
+            VirtualInterruptConfig::software(
+                intid,
+                None,
                 0,
-                VirtualInterruptConfig::software(
-                    unsafe { IntId::raw(irq as _) },
-                    None,
-                    0,
-                    VirtualInterruptState::Pending,
-                    false,
-                    true,
-                ),
-            );
-            return;
-        }
+                VirtualInterruptState::Pending,
+                false,
+                true,
+            ),
+        );
+        return Ok(());
+    }
 
-        if gic.typed_mut::<arm_gic_driver::v3::Gic>().is_some() {
-            inject_interrupt_gic_v3(irq);
-            return;
-        }
+    if gic.typed_mut::<arm_gic_driver::v3::Gic>().is_some() {
+        return inject_interrupt_gic_v3(irq);
+    }
 
-        panic!("no GIC driver found");
-    });
+    ax_err!(NoSuchDevice, "no supported GIC driver found")
 }
 
-fn inject_interrupt_gic_v3(vector: usize) {
+fn inject_interrupt_gic_v3(vector: usize) -> AxResult {
     debug!("Injecting virtual interrupt: vector={vector}");
     let elsr = ICH_ELRSR_EL2.read(ICH_ELRSR_EL2::STATUS);
     let lr_num = ICH_VTR_EL2.read(ICH_VTR_EL2::LISTREGS) as usize + 1;
@@ -68,15 +100,16 @@ fn inject_interrupt_gic_v3(vector: usize) {
             && lr_val.matches_any(&[ICH_LR_EL2::STATE::Pending, ICH_LR_EL2::STATE::Active])
         {
             debug!("Virtual interrupt {vector} already pending/active in LR{i}, skipping");
-            return;
+            return Ok(());
         }
     }
 
-    let free_lr = free_lr
-        .or_else(|| {
-            (0..lr_num).find(|&i| ich_lr_el2_get(i).matches_all(ICH_LR_EL2::STATE::Invalid))
-        })
-        .unwrap_or_else(|| panic!("no free list register to inject IRQ {vector}"));
+    let Some(free_lr) = free_lr.or_else(|| {
+        (0..lr_num).find(|&i| ich_lr_el2_get(i).matches_all(ICH_LR_EL2::STATE::Invalid))
+    }) else {
+        warn!("No free GICv3 list register for virtual interrupt {vector}; deferring injection");
+        return Err(AxError::WouldBlock);
+    };
 
     ich_lr_el2_write(
         free_lr,
@@ -89,6 +122,7 @@ fn inject_interrupt_gic_v3(vector: usize) {
     }
 
     debug!("Virtual interrupt {vector} injected successfully in LR{free_lr}");
+    Ok(())
 }
 
 pub(crate) fn read_gicd_iidr() -> u32 {

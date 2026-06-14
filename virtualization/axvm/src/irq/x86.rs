@@ -80,7 +80,7 @@ impl X86InterruptBackend {
         self.pending.lock().push_back(QueuedInterrupt {
             vcpu_id,
             interrupt: PendingInterrupt {
-                vector: interrupt.vector,
+                vector: interrupt.vector as usize,
                 trigger: if interrupt.level_triggered {
                     InterruptTriggerMode::LevelTriggered
                 } else {

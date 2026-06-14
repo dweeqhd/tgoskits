@@ -19,8 +19,6 @@ use core::ops::Range;
 use arm_vgic::Vgic;
 use ax_errno::{AxResult, ax_err};
 use ax_kspin::SpinNoIrq as Mutex;
-#[cfg(target_arch = "aarch64")]
-use ax_memory_addr::PhysAddr;
 use ax_memory_addr::is_aligned_4k;
 use axdevice_base::{
     AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps,
@@ -273,9 +271,6 @@ impl AxVmDevices {
             EmulatedDeviceType::InterruptController
                 | EmulatedDeviceType::Console
                 | EmulatedDeviceType::IVCChannel
-                | EmulatedDeviceType::GPPTRedistributor
-                | EmulatedDeviceType::GPPTDistributor
-                | EmulatedDeviceType::GPPTITS
                 | EmulatedDeviceType::PPPTGlobal
         )
     }
@@ -288,110 +283,6 @@ impl AxVmDevices {
                     #[cfg(target_arch = "aarch64")]
                     {
                         this.add_mmio_dev(Arc::new(Vgic::new()))?;
-                    }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::GPPTRedistributor => {
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        const GPPT_GICR_ARG_ERR_MSG: &str =
-                            "expect 3 args for gppt redistributor (cpu_num, stride, pcpu_id)";
-
-                        let cpu_num = config
-                            .cfg_list
-                            .first()
-                            .copied()
-                            .expect(GPPT_GICR_ARG_ERR_MSG);
-                        let stride = config
-                            .cfg_list
-                            .get(1)
-                            .copied()
-                            .expect(GPPT_GICR_ARG_ERR_MSG);
-                        let pcpu_id = config
-                            .cfg_list
-                            .get(2)
-                            .copied()
-                            .expect(GPPT_GICR_ARG_ERR_MSG);
-
-                        for i in 0..cpu_num {
-                            let addr = config.base_gpa + i * stride;
-                            let size = config.length;
-                            #[allow(clippy::arc_with_non_send_sync)]
-                            this.add_mmio_dev(Arc::new(arm_vgic::v3::vgicr::VGicR::new(
-                                addr.into(),
-                                Some(size),
-                                pcpu_id + i,
-                            )))?;
-
-                            info!(
-                                "GPPT Redistributor initialized for vCPU {i} with base GPA \
-                                 {addr:#x} and length {size:#x}"
-                            );
-                        }
-                    }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::GPPTDistributor => {
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        #[allow(clippy::arc_with_non_send_sync)]
-                        this.add_mmio_dev(Arc::new(arm_vgic::v3::vgicd::VGicD::new(
-                            config.base_gpa.into(),
-                            Some(config.length),
-                        )))?;
-
-                        info!(
-                            "GPPT Distributor initialized with base GPA {base_gpa:#x} and length \
-                             {length:#x}",
-                            base_gpa = config.base_gpa,
-                            length = config.length
-                        );
-                    }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::GPPTITS => {
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        let host_gits_base = config
-                            .cfg_list
-                            .first()
-                            .copied()
-                            .map(PhysAddr::from_usize)
-                            .expect("expect 1 arg for gppt its (host_gits_base)");
-
-                        #[allow(clippy::arc_with_non_send_sync)]
-                        this.add_mmio_dev(Arc::new(arm_vgic::v3::gits::Gits::new(
-                            config.base_gpa.into(),
-                            Some(config.length),
-                            host_gits_base,
-                            false,
-                        )))?;
-
-                        info!(
-                            "GPPT ITS initialized with base GPA {base_gpa:#x} and length \
-                             {length:#x}, host GITS base {host_gits_base:#x}",
-                            base_gpa = config.base_gpa,
-                            length = config.length,
-                            host_gits_base = host_gits_base
-                        );
                     }
                     #[cfg(not(target_arch = "aarch64"))]
                     {
