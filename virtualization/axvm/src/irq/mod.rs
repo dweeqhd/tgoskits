@@ -210,10 +210,6 @@ impl IrqResolver for InterruptFabric {
         let line = IrqLineId(line);
         let sink = self.sink_for_line(line.0)?;
         sink.validate_line(line, trigger)?;
-        Ok(IrqLine::new(
-            line,
-            trigger,
-            sink.clone(),
-        ))
+        Ok(IrqLine::new(line, trigger, sink.clone()))
     }
 }

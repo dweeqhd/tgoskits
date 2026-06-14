@@ -34,7 +34,6 @@ struct QueuedInterrupt {
 }
 
 pub(crate) struct LoongArchInterruptBackend {
-    vcpu_count: usize,
     pending: Mutex<VecDeque<QueuedInterrupt>>,
 }
 
@@ -47,7 +46,6 @@ impl LoongArchInterruptBackend {
             );
         }
         Ok(Self {
-            vcpu_count,
             pending: Mutex::new(VecDeque::new()),
         })
     }
@@ -67,15 +65,6 @@ impl LoongArchInterruptBackend {
 
     fn target_vcpu(&self, line: IrqLineId) -> AxResult<VCpuId> {
         Self::validate_device_line(line)?;
-        if BSP_VCPU_ID >= self.vcpu_count {
-            return ax_err!(
-                BadState,
-                format_args!(
-                    "LoongArch IRQ line {} targets missing bootstrap vCPU {}",
-                    line.0, BSP_VCPU_ID
-                )
-            );
-        }
         Ok(BSP_VCPU_ID)
     }
 }
