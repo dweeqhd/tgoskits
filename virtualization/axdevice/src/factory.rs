@@ -43,6 +43,66 @@ impl<'a> DeviceBuildContext<'a> {
     pub fn resolve_irq(&self, line: usize, trigger: InterruptTriggerMode) -> AxResult<IrqLine> {
         self.irq_resolver.resolve_irq(line, trigger)
     }
+
+    /// Resolves the single named IRQ output supported by a device factory.
+    ///
+    /// Legacy configurations fall back to `irq_id` when non-zero, otherwise
+    /// the factory-provided default line and trigger mode are used.
+    pub fn resolve_config_irq(
+        &self,
+        config: &EmulatedDeviceConfig,
+        name: &str,
+        default_line: usize,
+        required_trigger: InterruptTriggerMode,
+    ) -> AxResult<IrqLine> {
+        if config.irqs.is_empty() {
+            let line = if config.irq_id == 0 {
+                default_line
+            } else {
+                config.irq_id
+            };
+            return self.resolve_irq(line, required_trigger);
+        }
+
+        if config.irqs.len() != 1 {
+            return ax_err!(
+                InvalidInput,
+                format_args!(
+                    "emulated device '{}' supports exactly one IRQ output named '{name}'",
+                    config.name
+                )
+            );
+        }
+        let irq = &config.irqs[0];
+        if irq.name != name {
+            return ax_err!(
+                InvalidInput,
+                format_args!(
+                    "emulated device '{}' requires IRQ output '{name}', found '{}'",
+                    config.name, irq.name
+                )
+            );
+        }
+        if irq.trigger != required_trigger {
+            return ax_err!(
+                InvalidInput,
+                format_args!(
+                    "emulated device '{}' IRQ output '{name}' requires trigger {:?}, found {:?}",
+                    config.name, required_trigger, irq.trigger
+                )
+            );
+        }
+        if config.irq_id != 0 && name == "irq" && config.irq_id != irq.line {
+            return ax_err!(
+                InvalidInput,
+                format_args!(
+                    "emulated device '{}' has conflicting legacy irq_id {} and named 'irq' line {}",
+                    config.name, config.irq_id, irq.line
+                )
+            );
+        }
+        self.resolve_irq(irq.line, irq.trigger)
+    }
 }
 
 /// Builds all capabilities contributed by one emulated device type.

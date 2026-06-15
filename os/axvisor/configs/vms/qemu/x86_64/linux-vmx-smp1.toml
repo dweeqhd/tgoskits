@@ -51,9 +51,9 @@ interrupt_mode = "passthrough"
 # Emu_devices.
 # Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig.
 emu_devices = [
-  ["x86-com1", 0x3f8, 0x8, 0x0, 0x2, []],
-  ["x86-ioapic", 0xfec0_0000, 0x1000, 0x0, 0x23, []],
-  ["x86-pit", 0x40, 0x22, 0x0, 0x24, []],
+  ["x86-com1", 0x3f8, 0x8, 0x0, 0x2, [], [["irq", 4, "level"]]],
+  ["x86-ioapic", 0xfec0_0000, 0x1000, 0x0, 0x23, [], []],
+  ["x86-pit", 0x40, 0x22, 0x0, 0x24, [], [["irq", 0, "edge"]]],
 ]
 
 # Pass-through devices.

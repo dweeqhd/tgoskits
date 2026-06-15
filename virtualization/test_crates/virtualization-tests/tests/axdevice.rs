@@ -208,6 +208,7 @@ fn device_config(
         base_gpa,
         length,
         irq_id: 0,
+        irqs: vec![],
         emu_type,
         cfg_list: vec![],
     }

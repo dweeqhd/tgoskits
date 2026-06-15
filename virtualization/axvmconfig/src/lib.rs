@@ -26,8 +26,9 @@ use alloc::{string::String, vec::Vec};
 
 use ax_errno::AxResult;
 pub use axvm_types::{
-    EmulatedDeviceConfig, EmulatedDeviceType, PassThroughAddressConfig, PassThroughDeviceConfig,
-    VMBootProtocol, VMInterruptMode, VMType, VmMemConfig, VmMemMappingType,
+    DeviceIrqConfig, EmulatedDeviceConfig, EmulatedDeviceType, InterruptTriggerMode,
+    PassThroughAddressConfig, PassThroughDeviceConfig, VMBootProtocol, VMInterruptMode, VMType,
+    VmMemConfig, VmMemMappingType,
 };
 
 mod emu_device_type_serde {
@@ -52,6 +53,33 @@ mod emu_device_type_serde {
             None => Err(de::Error::custom(alloc::format!(
                 "unknown emulated device type value: {value}"
             ))),
+        }
+    }
+}
+
+#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+enum InterruptTriggerModeSerde {
+    #[serde(rename = "edge", alias = "edge_triggered")]
+    EdgeTriggered,
+    #[serde(rename = "level", alias = "level_triggered")]
+    LevelTriggered,
+}
+
+impl From<InterruptTriggerModeSerde> for InterruptTriggerMode {
+    fn from(value: InterruptTriggerModeSerde) -> Self {
+        match value {
+            InterruptTriggerModeSerde::EdgeTriggered => Self::EdgeTriggered,
+            InterruptTriggerModeSerde::LevelTriggered => Self::LevelTriggered,
+        }
+    }
+}
+
+impl From<InterruptTriggerMode> for InterruptTriggerModeSerde {
+    fn from(value: InterruptTriggerMode) -> Self {
+        match value {
+            InterruptTriggerMode::EdgeTriggered => Self::EdgeTriggered,
+            InterruptTriggerMode::LevelTriggered => Self::LevelTriggered,
         }
     }
 }
@@ -149,28 +177,108 @@ mod vm_mem_config_vec_serde {
 }
 
 #[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+struct DeviceIrqConfigSerde {
+    name: String,
+    line: usize,
+    trigger: InterruptTriggerModeSerde,
+}
+
+impl From<DeviceIrqConfigSerde> for DeviceIrqConfig {
+    fn from(value: DeviceIrqConfigSerde) -> Self {
+        Self {
+            name: value.name,
+            line: value.line,
+            trigger: value.trigger.into(),
+        }
+    }
+}
+
+impl From<&DeviceIrqConfig> for DeviceIrqConfigSerde {
+    fn from(value: &DeviceIrqConfig) -> Self {
+        Self {
+            name: value.name.clone(),
+            line: value.line,
+            trigger: value.trigger.into(),
+        }
+    }
+}
+
+#[cfg_attr(all(feature = "std", any(windows, unix)), derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct EmulatedDeviceConfigSerde {
     name: String,
     base_gpa: usize,
     length: usize,
+    #[cfg_attr(
+        all(feature = "std", any(windows, unix)),
+        schemars(description = "Compatibility field for legacy single-IRQ configurations")
+    )]
     irq_id: usize,
     #[cfg_attr(all(feature = "std", any(windows, unix)), schemars(with = "u8"))]
     #[serde(with = "emu_device_type_serde")]
     emu_type: EmulatedDeviceType,
     cfg_list: Vec<usize>,
+    #[serde(default)]
+    irqs: Vec<DeviceIrqConfigSerde>,
 }
 
-impl From<EmulatedDeviceConfigSerde> for EmulatedDeviceConfig {
-    fn from(value: EmulatedDeviceConfigSerde) -> Self {
-        Self {
+impl TryFrom<EmulatedDeviceConfigSerde> for EmulatedDeviceConfig {
+    type Error = String;
+
+    fn try_from(value: EmulatedDeviceConfigSerde) -> Result<Self, Self::Error> {
+        for (index, irq) in value.irqs.iter().enumerate() {
+            if irq.name.is_empty() {
+                return Err(alloc::format!(
+                    "emulated device '{}' has an IRQ output with an empty name",
+                    value.name
+                ));
+            }
+            for existing in &value.irqs[..index] {
+                if existing.name == irq.name {
+                    return Err(alloc::format!(
+                        "emulated device '{}' has duplicate IRQ output name '{}'",
+                        value.name,
+                        irq.name
+                    ));
+                }
+                if existing.line == irq.line {
+                    return Err(alloc::format!(
+                        "emulated device '{}' assigns IRQ line {} more than once",
+                        value.name,
+                        irq.line
+                    ));
+                }
+            }
+        }
+
+        if value.irq_id != 0 && !value.irqs.is_empty() {
+            let Some(legacy_irq) = value.irqs.iter().find(|irq| irq.name == "irq") else {
+                return Err(alloc::format!(
+                    "emulated device '{}' sets legacy irq_id {} but has no named 'irq' output",
+                    value.name,
+                    value.irq_id
+                ));
+            };
+            if legacy_irq.line != value.irq_id {
+                return Err(alloc::format!(
+                    "emulated device '{}' has conflicting legacy irq_id {} and named 'irq' line {}",
+                    value.name,
+                    value.irq_id,
+                    legacy_irq.line
+                ));
+            }
+        }
+
+        Ok(Self {
             name: value.name,
             base_gpa: value.base_gpa,
             length: value.length,
             irq_id: value.irq_id,
+            irqs: value.irqs.into_iter().map(Into::into).collect(),
             emu_type: value.emu_type,
             cfg_list: value.cfg_list,
-        }
+        })
     }
 }
 
@@ -183,6 +291,7 @@ impl From<&EmulatedDeviceConfig> for EmulatedDeviceConfigSerde {
             irq_id: value.irq_id,
             emu_type: value.emu_type,
             cfg_list: value.cfg_list.clone(),
+            irqs: value.irqs.iter().map(Into::into).collect(),
         }
     }
 }
@@ -207,10 +316,11 @@ mod emulated_device_config_vec_serde {
     where
         D: Deserializer<'de>,
     {
-        Ok(Vec::<EmulatedDeviceConfigSerde>::deserialize(deserializer)?
+        Vec::<EmulatedDeviceConfigSerde>::deserialize(deserializer)?
             .into_iter()
-            .map(Into::into)
-            .collect())
+            .map(TryInto::try_into)
+            .collect::<Result<Vec<_>, String>>()
+            .map_err(serde::de::Error::custom)
     }
 }
 
