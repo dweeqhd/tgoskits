@@ -55,7 +55,7 @@ pub struct EmulatedLocalApic {
 
 pub use pit::EmulatedPit;
 pub use serial::EmulatedSerialPort;
-pub use vioapic::{EmulatedIoApic, IoApicInterrupt};
+pub use vioapic::{EmulatedIoApic, IOAPIC_GSI_COUNT, IoApicInterrupt};
 
 impl EmulatedLocalApic {
     /// Create a new `EmulatedLocalApic`.

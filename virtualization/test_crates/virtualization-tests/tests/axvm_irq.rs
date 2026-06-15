@@ -12,7 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::{Arc, Mutex, Weak};
+use std::{
+    collections::VecDeque,
+    sync::{Arc, Mutex, Weak},
+};
 
 use ax_errno::{AxError, AxResult};
 use ax_plat::{console::ConsoleIf, time::TimeIf};
@@ -21,12 +24,15 @@ use axdevice::{
     DeviceFactoryRegistry, DeviceRegistration, IrqResolver,
 };
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, InterruptTriggerMode, IrqLine, IrqLineId, IrqSink,
+    AccessWidth, BaseDeviceOps, InterruptTriggerMode, IrqLine, IrqLineId, IrqSink, Port,
 };
 use axvm::InterruptFabric;
 use axvm_types::{
     EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, VMInterruptMode,
 };
+use x86_vlapic::{EmulatedIoApic, EmulatedPit, EmulatedSerialPort, IoApicInterrupt};
+
+static TEST_CONSOLE_INPUT: Mutex<VecDeque<u8>> = Mutex::new(VecDeque::new());
 
 struct TestConsole;
 
@@ -34,8 +40,13 @@ struct TestConsole;
 impl ConsoleIf for TestConsole {
     fn write_bytes(_bytes: &[u8]) {}
 
-    fn read_bytes(_bytes: &mut [u8]) -> usize {
-        0
+    fn read_bytes(bytes: &mut [u8]) -> usize {
+        let mut input = TEST_CONSOLE_INPUT.lock().unwrap();
+        let count = bytes.len().min(input.len());
+        for byte in &mut bytes[..count] {
+            *byte = input.pop_front().unwrap();
+        }
+        count
     }
 
     fn irq_num() -> Option<usize> {
@@ -91,6 +102,24 @@ impl RecordingIrqSink {
     fn events(&self) -> Vec<IrqEvent> {
         self.events.lock().unwrap().clone()
     }
+}
+
+fn program_ioapic_entry(ioapic: &EmulatedIoApic, gsi: usize, low: u32) {
+    let base = GuestPhysAddr::from(0xfec0_0000);
+    ioapic
+        .handle_write(
+            GuestPhysAddr::from(base.as_usize()),
+            AccessWidth::Dword,
+            0x10 + 2 * gsi,
+        )
+        .unwrap();
+    ioapic
+        .handle_write(
+            GuestPhysAddr::from(base.as_usize() + 0x10),
+            AccessWidth::Dword,
+            low as usize,
+        )
+        .unwrap();
 }
 
 impl IrqSink for RecordingIrqSink {
@@ -320,4 +349,140 @@ fn test_equal_irq_numbers_are_isolated_between_fabrics() {
     );
     assert!(sink_b.upgrade().unwrap().events().is_empty());
     assert_eq!(devices_b.iter_mmio_dev().count(), 1);
+}
+
+#[test]
+fn test_ioapic_mask_and_level_eoi_semantics() {
+    let ioapic = EmulatedIoApic::new_default();
+    assert_eq!(ioapic.pulse_gsi(5), None);
+
+    program_ioapic_entry(&ioapic, 5, 0x31);
+    assert_eq!(
+        ioapic.pulse_gsi(5),
+        Some(IoApicInterrupt {
+            vector: 0x31,
+            level_triggered: false,
+        })
+    );
+
+    program_ioapic_entry(&ioapic, 6, 0x32 | (1 << 15));
+    assert_eq!(
+        ioapic.set_gsi_level(6, true),
+        Some(IoApicInterrupt {
+            vector: 0x32,
+            level_triggered: true,
+        })
+    );
+    assert_eq!(ioapic.set_gsi_level(6, true), None);
+    assert_eq!(
+        ioapic.end_of_interrupt(0x32),
+        Some(IoApicInterrupt {
+            vector: 0x32,
+            level_triggered: true,
+        })
+    );
+    assert_eq!(ioapic.set_gsi_level(6, false), None);
+    assert_eq!(ioapic.end_of_interrupt(0x32), None);
+}
+
+#[test]
+fn test_ioapic_instances_keep_gsi_state_isolated() {
+    let ioapic_a = EmulatedIoApic::new_default();
+    let ioapic_b = EmulatedIoApic::new_default();
+    program_ioapic_entry(&ioapic_a, 7, 0x33);
+    program_ioapic_entry(&ioapic_b, 7, 0x33);
+
+    assert!(ioapic_a.set_gsi_level(7, true).is_some());
+    assert!(ioapic_b.route_asserted_lines().is_empty());
+}
+
+#[test]
+fn test_pit_poll_emits_periodic_edge_pulses() {
+    let sink = Arc::new(RecordingIrqSink::default());
+    let irq = IrqLine::new(
+        IrqLineId(0),
+        InterruptTriggerMode::EdgeTriggered,
+        sink.clone(),
+    );
+    let pit = EmulatedPit::new(irq);
+
+    pit.handle_write(Port(0x43), AccessWidth::Byte, 0x34)
+        .unwrap();
+    pit.handle_write(Port(0x40), AccessWidth::Byte, 0xa9)
+        .unwrap();
+    pit.handle_write(Port(0x40), AccessWidth::Byte, 0x04)
+        .unwrap();
+
+    pit.poll(500_000).unwrap();
+    pit.poll(1_000_000).unwrap();
+    pit.poll(2_000_000).unwrap();
+
+    assert_eq!(
+        sink.events(),
+        vec![IrqEvent::Pulse(IrqLineId(0)), IrqEvent::Pulse(IrqLineId(0)),]
+    );
+}
+
+#[test]
+fn test_serial_rx_irq_stays_asserted_until_fifo_is_empty() {
+    TEST_CONSOLE_INPUT.lock().unwrap().extend(*b"ab");
+    let sink = Arc::new(RecordingIrqSink::default());
+    let irq = IrqLine::new(
+        IrqLineId(4),
+        InterruptTriggerMode::LevelTriggered,
+        sink.clone(),
+    );
+    let serial = EmulatedSerialPort::new(irq);
+
+    serial
+        .handle_write(Port(0x3f9), AccessWidth::Byte, 1)
+        .unwrap();
+    serial.poll().unwrap();
+    assert_eq!(sink.events(), vec![IrqEvent::SetLevel(IrqLineId(4), true)]);
+
+    assert_eq!(
+        serial.handle_read(Port(0x3f8), AccessWidth::Byte),
+        Ok(b'a' as usize)
+    );
+    assert_eq!(sink.events(), vec![IrqEvent::SetLevel(IrqLineId(4), true)]);
+
+    assert_eq!(
+        serial.handle_read(Port(0x3f8), AccessWidth::Byte),
+        Ok(b'b' as usize)
+    );
+    assert_eq!(
+        sink.events(),
+        vec![
+            IrqEvent::SetLevel(IrqLineId(4), true),
+            IrqEvent::SetLevel(IrqLineId(4), false),
+        ]
+    );
+
+    TEST_CONSOLE_INPUT.lock().unwrap().push_back(b'c');
+    serial.poll().unwrap();
+    serial
+        .handle_write(Port(0x3f9), AccessWidth::Byte, 0)
+        .unwrap();
+    assert_eq!(
+        sink.events(),
+        vec![
+            IrqEvent::SetLevel(IrqLineId(4), true),
+            IrqEvent::SetLevel(IrqLineId(4), false),
+            IrqEvent::SetLevel(IrqLineId(4), true),
+            IrqEvent::SetLevel(IrqLineId(4), false),
+        ]
+    );
+
+    serial
+        .handle_write(Port(0x3f9), AccessWidth::Byte, 1)
+        .unwrap();
+    TEST_CONSOLE_INPUT.lock().unwrap().push_back(b'd');
+    serial.poll().unwrap();
+    serial
+        .handle_write(Port(0x3fa), AccessWidth::Byte, 1 << 1)
+        .unwrap();
+    assert_eq!(
+        sink.events().last(),
+        Some(&IrqEvent::SetLevel(IrqLineId(4), false))
+    );
 }

@@ -431,17 +431,24 @@ fn test_equal_address_values_on_different_buses_are_allowed() {
 
 #[test]
 fn test_conflicting_device_config_returns_structured_error() {
-    let ioapic = EmulatedDeviceConfig {
-        name: String::from("ioapic"),
-        base_gpa: 0xfec0_0000,
-        length: 0x1000,
-        irq_id: 0,
-        emu_type: EmulatedDeviceType::X86IoApic,
-        cfg_list: vec![],
-    };
+    let mut factories = DeviceFactoryRegistry::new();
+    factories.register(Arc::new(MockMmioFactory)).unwrap();
+    let resolver = RejectingIrqResolver;
+    let context = DeviceBuildContext::new(&resolver);
+    let device = device_config(
+        "conflicting-mmio",
+        EmulatedDeviceType::VirtioBlk,
+        0xfec0_0000,
+        0x1000,
+    );
 
     assert_eq!(
-        AxVmDevices::new(AxVmDeviceConfig::new(vec![ioapic.clone(), ioapic])).err(),
+        AxVmDevices::build_with_factories(
+            AxVmDeviceConfig::new(vec![device.clone(), device]),
+            &factories,
+            &context,
+        )
+        .err(),
         Some(AxError::AlreadyExists)
     );
 }

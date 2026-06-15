@@ -1,6 +1,6 @@
 use ax_errno::{AxResult, ax_err};
-use ax_kspin::SpinNoIrq as Mutex;
-use axdevice_base::{AccessWidth, BaseDeviceOps, EmuDeviceType, Port, PortRange};
+use ax_kspin::SpinNoPreempt as Mutex;
+use axdevice_base::{AccessWidth, BaseDeviceOps, EmuDeviceType, IrqLine, Port, PortRange};
 
 use crate::host;
 
@@ -256,43 +256,51 @@ impl PitState {
 /// A minimal emulated x86 PIT/8254 device.
 pub struct EmulatedPit {
     state: Mutex<PitState>,
+    irq: IrqLine,
 }
 
 impl EmulatedPit {
     /// Create a new PIT device.
-    pub const fn new() -> Self {
+    pub const fn new(irq: IrqLine) -> Self {
         Self {
             state: Mutex::new(PitState::new()),
+            irq,
         }
     }
 
-    /// Return whether channel 0 has reached its next IRQ0 deadline.
+    /// Poll channel 0 and pulse IRQ0 when its next deadline is reached.
     ///
     /// When a deadline is reached, this advances the deadline by whole periods so the timer
     /// remains periodic without queueing a burst of missed ticks.
-    pub fn consume_irq0_if_due(&self, now_ns: u64) -> bool {
-        let mut state = self.state.lock();
-        let channel = &mut state.channel0;
-        let Some(period_ns) = channel.period_ns else {
-            return false;
-        };
-        if now_ns < channel.next_deadline_ns {
-            return false;
-        }
-
-        if channel.mode.is_periodic_irq() {
-            let elapsed = now_ns.saturating_sub(channel.next_deadline_ns);
-            let missed_periods = elapsed / period_ns;
-            channel.next_deadline_ns = channel
-                .next_deadline_ns
-                .saturating_add((missed_periods + 1).saturating_mul(period_ns));
-        } else {
-            if channel.irq_fired {
-                return false;
+    pub fn poll(&self, now_ns: u64) -> AxResult {
+        let due = {
+            let mut state = self.state.lock();
+            let channel = &mut state.channel0;
+            let Some(period_ns) = channel.period_ns else {
+                return Ok(());
+            };
+            if now_ns < channel.next_deadline_ns {
+                return Ok(());
             }
-            channel.irq_fired = true;
+
+            if channel.mode.is_periodic_irq() {
+                let elapsed = now_ns.saturating_sub(channel.next_deadline_ns);
+                let missed_periods = elapsed / period_ns;
+                channel.next_deadline_ns = channel
+                    .next_deadline_ns
+                    .saturating_add((missed_periods + 1).saturating_mul(period_ns));
+            } else if channel.irq_fired {
+                return Ok(());
+            } else {
+                channel.irq_fired = true;
+            }
+            true
+        };
+
+        if due {
+            self.irq.pulse()?;
         }
-        true
+        Ok(())
     }
 
     fn channel_mut(state: &mut PitState, channel: u8) -> Option<&mut PitChannel> {
@@ -352,12 +360,6 @@ impl EmulatedPit {
                 state.channel2.latch_status(now_ns);
             }
         }
-    }
-}
-
-impl Default for EmulatedPit {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
