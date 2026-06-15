@@ -1,10 +1,12 @@
 //! Host callbacks required by AArch64 vCPU implementation.
 
+use ax_errno::AxResult;
+
 /// Host architecture operations required by AArch64 virtualization code.
 #[ax_crate_interface::def_interface]
 pub trait ArmVcpuHostIf {
     /// Inject a virtual interrupt through host GIC state.
-    fn hardware_inject_virtual_interrupt(vector: u8);
+    fn hardware_inject_virtual_interrupt(vector: usize) -> AxResult;
 
     /// Handle or report a pending host IRQ.
     ///
@@ -17,8 +19,8 @@ pub trait ArmVcpuHostIf {
     fn handle_irq();
 }
 
-pub(crate) fn hardware_inject_virtual_interrupt(vector: u8) {
-    ax_crate_interface::call_interface!(ArmVcpuHostIf::hardware_inject_virtual_interrupt(vector));
+pub(crate) fn hardware_inject_virtual_interrupt(vector: usize) -> AxResult {
+    ax_crate_interface::call_interface!(ArmVcpuHostIf::hardware_inject_virtual_interrupt(vector))
 }
 
 pub(crate) fn fetch_irq() -> usize {

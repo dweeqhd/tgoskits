@@ -3,6 +3,7 @@
 use alloc::boxed::Box;
 use core::time::Duration;
 
+use ax_errno::AxResult;
 use ax_memory_addr::{PhysAddr, VirtAddr};
 
 /// Host operations required by ARM VGIC and virtual timer components.
@@ -23,6 +24,9 @@ pub trait ArmVgicHostIf {
     /// Return current vCPU ID.
     fn current_vcpu_id() -> usize;
 
+    /// Return current VM ID.
+    fn current_vm_id() -> usize;
+
     /// Current monotonic host time in nanoseconds.
     fn current_time_nanos() -> u64;
 
@@ -42,7 +46,10 @@ pub trait ArmVgicHostIf {
     fn get_host_gicr_base() -> PhysAddr;
 
     /// Inject a virtual interrupt.
-    fn hardware_inject_virtual_interrupt(vector: u8);
+    fn hardware_inject_virtual_interrupt(vector: usize) -> AxResult;
+
+    /// Queue a virtual interrupt for delivery by the target vCPU.
+    fn queue_virtual_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxResult;
 }
 
 #[cfg(feature = "vgicv3")]
@@ -75,6 +82,10 @@ pub(crate) fn current_vcpu_id() -> usize {
     ax_crate_interface::call_interface!(ArmVgicHostIf::current_vcpu_id())
 }
 
+pub(crate) fn current_vm_id() -> usize {
+    ax_crate_interface::call_interface!(ArmVgicHostIf::current_vm_id())
+}
+
 pub(crate) fn current_time_nanos() -> u64 {
     ax_crate_interface::call_interface!(ArmVgicHostIf::current_time_nanos())
 }
@@ -102,6 +113,12 @@ pub fn get_host_gicr_base() -> PhysAddr {
     ax_crate_interface::call_interface!(ArmVgicHostIf::get_host_gicr_base())
 }
 
-pub fn hardware_inject_virtual_interrupt(vector: u8) {
-    ax_crate_interface::call_interface!(ArmVgicHostIf::hardware_inject_virtual_interrupt(vector));
+pub fn hardware_inject_virtual_interrupt(vector: usize) -> AxResult {
+    ax_crate_interface::call_interface!(ArmVgicHostIf::hardware_inject_virtual_interrupt(vector))
+}
+
+pub(crate) fn queue_virtual_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxResult {
+    ax_crate_interface::call_interface!(ArmVgicHostIf::queue_virtual_interrupt(
+        vm_id, vcpu_id, vector
+    ))
 }
