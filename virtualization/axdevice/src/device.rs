@@ -19,8 +19,6 @@ use core::ops::Range;
 use arm_vgic::Vgic;
 use ax_errno::{AxResult, ax_err};
 use ax_kspin::SpinNoIrq as Mutex;
-#[cfg(target_arch = "aarch64")]
-use ax_memory_addr::PhysAddr;
 use ax_memory_addr::is_aligned_4k;
 use axdevice_base::{
     AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps,
@@ -29,10 +27,11 @@ use axdevice_base::{
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange};
 #[cfg(target_arch = "riscv64")]
 use riscv_vplic::VPlicGlobal;
-#[cfg(target_arch = "x86_64")]
-use x86_vlapic::{EmulatedIoApic, EmulatedPit, EmulatedSerialPort, IoApicInterrupt};
 
-use crate::{AxVmDeviceConfig, range_alloc::RangeAllocator};
+use crate::{
+    AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, DeviceRegistration,
+    PollableDeviceOps, range_alloc::RangeAllocator,
+};
 
 /// A set of emulated device types that can be accessed by a specific address range type.
 pub struct AxEmuDevices<R: DeviceAddrRange> {
@@ -47,9 +46,95 @@ impl<R: DeviceAddrRange + 'static> AxEmuDevices<R> {
         }
     }
 
-    /// Adds a device to the set.
-    pub fn add_dev(&mut self, dev: Arc<dyn BaseDeviceOps<R>>) {
+    fn validate_dev_against<'a>(
+        dev: &Arc<dyn BaseDeviceOps<R>>,
+        existing_devices: impl IntoIterator<Item = &'a Arc<dyn BaseDeviceOps<R>>>,
+    ) -> AxResult
+    where
+        R: 'a,
+    {
+        let new_range = dev.address_range();
+        let new_type = dev.emu_type();
+
+        if new_range.is_empty() {
+            return ax_err!(
+                InvalidInput,
+                format_args!(
+                    "failed to register {} device type {} at range {new_range:#x}: range is empty \
+                     or invalid, possibly due to address overflow",
+                    R::BUS_NAME,
+                    new_type,
+                )
+            );
+        }
+
+        for existing in existing_devices {
+            let existing_range = existing.address_range();
+            let existing_type = existing.emu_type();
+
+            if Arc::ptr_eq(existing, dev) {
+                return ax_err!(
+                    AlreadyExists,
+                    format_args!(
+                        "failed to register {} device type {} at range {new_range:#x}: the same \
+                         device is already registered as type {} at range {existing_range:#x}",
+                        R::BUS_NAME,
+                        new_type,
+                        existing_type,
+                    )
+                );
+            }
+
+            if new_range == existing_range {
+                return ax_err!(
+                    AlreadyExists,
+                    format_args!(
+                        "failed to register {} device type {} at range {new_range:#x}: range is \
+                         already registered by device type {} at range {existing_range:#x}",
+                        R::BUS_NAME,
+                        new_type,
+                        existing_type,
+                    )
+                );
+            }
+
+            if new_range.overlaps(&existing_range) {
+                return ax_err!(
+                    AddrInUse,
+                    format_args!(
+                        "failed to register {} device type {} at range {new_range:#x}: overlaps \
+                         device type {} at range {existing_range:#x}",
+                        R::BUS_NAME,
+                        new_type,
+                        existing_type,
+                    )
+                );
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Validates a group of devices without modifying this set.
+    fn validate_devices(&self, devices: &[Arc<dyn BaseDeviceOps<R>>]) -> AxResult {
+        for (index, device) in devices.iter().enumerate() {
+            Self::validate_dev_against(
+                device,
+                self.emu_devices.iter().chain(devices[..index].iter()),
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Adds a device to the set after validating its range.
+    pub fn add_dev(&mut self, dev: Arc<dyn BaseDeviceOps<R>>) -> AxResult {
+        self.validate_devices(core::slice::from_ref(&dev))?;
         self.emu_devices.push(dev);
+        Ok(())
+    }
+
+    fn commit_devices(&mut self, devices: Vec<Arc<dyn BaseDeviceOps<R>>>) {
+        self.emu_devices.extend(devices);
     }
 
     // pub fn remove_dev(&mut self, ...)
@@ -93,12 +178,7 @@ pub struct AxVmDevices {
     emu_mmio_devices: AxEmuMmioDevices,
     emu_sys_reg_devices: AxEmuSysRegDevices,
     emu_port_devices: AxEmuPortDevices,
-    #[cfg(target_arch = "x86_64")]
-    x86_ioapic: Option<Arc<EmulatedIoApic>>,
-    #[cfg(target_arch = "x86_64")]
-    x86_pit: Option<Arc<EmulatedPit>>,
-    #[cfg(target_arch = "x86_64")]
-    x86_serial: Option<Arc<EmulatedSerialPort>>,
+    pollable_devices: Vec<Arc<dyn PollableDeviceOps>>,
     /// IVC channel range allocator
     ivc_channel: Option<Mutex<RangeAllocator>>,
 }
@@ -131,137 +211,78 @@ fn panic_device_not_found(
 
 /// The implemention for AxVmDevices
 impl AxVmDevices {
-    /// According AxVmDeviceConfig to init the AxVmDevices
-    pub fn new(config: AxVmDeviceConfig) -> Self {
-        let mut this = Self {
+    fn empty() -> Self {
+        Self {
             emu_mmio_devices: AxEmuMmioDevices::new(),
             emu_sys_reg_devices: AxEmuSysRegDevices::new(),
             emu_port_devices: AxEmuPortDevices::new(),
-            #[cfg(target_arch = "x86_64")]
-            x86_ioapic: None,
-            #[cfg(target_arch = "x86_64")]
-            x86_pit: None,
-            #[cfg(target_arch = "x86_64")]
-            x86_serial: None,
+            pollable_devices: Vec::new(),
             ivc_channel: None,
-        };
+        }
+    }
 
-        Self::init(&mut this, &config.emu_configs);
-        this
+    /// According AxVmDeviceConfig to init the AxVmDevices
+    pub fn new(config: AxVmDeviceConfig) -> AxResult<Self> {
+        let mut this = Self::empty();
+
+        Self::init(&mut this, &config.emu_configs)?;
+        Ok(this)
+    }
+
+    /// Builds devices with registered factories and explicit legacy fallbacks.
+    pub fn build_with_factories(
+        config: AxVmDeviceConfig,
+        factories: &DeviceFactoryRegistry,
+        context: &DeviceBuildContext<'_>,
+    ) -> AxResult<Self> {
+        let mut this = Self::empty();
+        for config in &config.emu_configs {
+            if factories.get(config.emu_type).is_some() {
+                this.register_factory_device(config, factories, context)?;
+            } else if Self::is_legacy_fallback(config.emu_type) {
+                Self::init(&mut this, core::slice::from_ref(config))?;
+            } else {
+                return ax_err!(
+                    Unsupported,
+                    format_args!(
+                        "no factory is registered for emulated device '{}' of type {}",
+                        config.name, config.emu_type
+                    )
+                );
+            }
+        }
+        Ok(this)
+    }
+
+    /// Builds and atomically registers one factory-managed device.
+    pub fn register_factory_device(
+        &mut self,
+        config: &EmulatedDeviceConfig,
+        factories: &DeviceFactoryRegistry,
+        context: &DeviceBuildContext<'_>,
+    ) -> AxResult {
+        let bundle = factories.build(config, context)?;
+        self.register_bundle(bundle)
+    }
+
+    fn is_legacy_fallback(device_type: EmulatedDeviceType) -> bool {
+        matches!(
+            device_type,
+            EmulatedDeviceType::InterruptController
+                | EmulatedDeviceType::Console
+                | EmulatedDeviceType::IVCChannel
+                | EmulatedDeviceType::PPPTGlobal
+        )
     }
 
     /// According the emu_configs to init every  specific device
-    fn init(this: &mut Self, emu_configs: &Vec<EmulatedDeviceConfig>) {
+    fn init(this: &mut Self, emu_configs: &[EmulatedDeviceConfig]) -> AxResult {
         for config in emu_configs {
             match config.emu_type {
                 EmulatedDeviceType::InterruptController => {
                     #[cfg(target_arch = "aarch64")]
                     {
-                        this.add_mmio_dev(Arc::new(Vgic::new()));
-                    }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::GPPTRedistributor => {
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        const GPPT_GICR_ARG_ERR_MSG: &str =
-                            "expect 3 args for gppt redistributor (cpu_num, stride, pcpu_id)";
-
-                        let cpu_num = config
-                            .cfg_list
-                            .first()
-                            .copied()
-                            .expect(GPPT_GICR_ARG_ERR_MSG);
-                        let stride = config
-                            .cfg_list
-                            .get(1)
-                            .copied()
-                            .expect(GPPT_GICR_ARG_ERR_MSG);
-                        let pcpu_id = config
-                            .cfg_list
-                            .get(2)
-                            .copied()
-                            .expect(GPPT_GICR_ARG_ERR_MSG);
-
-                        for i in 0..cpu_num {
-                            let addr = config.base_gpa + i * stride;
-                            let size = config.length;
-                            #[allow(clippy::arc_with_non_send_sync)]
-                            this.add_mmio_dev(Arc::new(arm_vgic::v3::vgicr::VGicR::new(
-                                addr.into(),
-                                Some(size),
-                                pcpu_id + i,
-                            )));
-
-                            info!(
-                                "GPPT Redistributor initialized for vCPU {i} with base GPA \
-                                 {addr:#x} and length {size:#x}"
-                            );
-                        }
-                    }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::GPPTDistributor => {
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        #[allow(clippy::arc_with_non_send_sync)]
-                        this.add_mmio_dev(Arc::new(arm_vgic::v3::vgicd::VGicD::new(
-                            config.base_gpa.into(),
-                            Some(config.length),
-                        )));
-
-                        info!(
-                            "GPPT Distributor initialized with base GPA {base_gpa:#x} and length \
-                             {length:#x}",
-                            base_gpa = config.base_gpa,
-                            length = config.length
-                        );
-                    }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::GPPTITS => {
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        let host_gits_base = config
-                            .cfg_list
-                            .first()
-                            .copied()
-                            .map(PhysAddr::from_usize)
-                            .expect("expect 1 arg for gppt its (host_gits_base)");
-
-                        #[allow(clippy::arc_with_non_send_sync)]
-                        this.add_mmio_dev(Arc::new(arm_vgic::v3::gits::Gits::new(
-                            config.base_gpa.into(),
-                            Some(config.length),
-                            host_gits_base,
-                            false,
-                        )));
-
-                        info!(
-                            "GPPT ITS initialized with base GPA {base_gpa:#x} and length \
-                             {length:#x}, host GITS base {host_gits_base:#x}",
-                            base_gpa = config.base_gpa,
-                            length = config.length,
-                            host_gits_base = host_gits_base
-                        );
+                        this.add_mmio_dev(Arc::new(Vgic::new()))?;
                     }
                     #[cfg(not(target_arch = "aarch64"))]
                     {
@@ -283,7 +304,7 @@ impl AxVmDevices {
                             config.base_gpa.into(),
                             Some(config.length),
                             context_num, // Here only 1 core and should be cpu0
-                        )));
+                        )))?;
                         // PLIC Partial Passthrough Global.
                         info!(
                             "Partial PLIC Passthrough Global initialized with base GPA {:#x} and \
@@ -300,58 +321,10 @@ impl AxVmDevices {
                     }
                 }
                 EmulatedDeviceType::Console => {
-                    #[cfg(target_arch = "x86_64")]
-                    {
-                        let serial = Arc::new(EmulatedSerialPort::new());
-                        this.x86_serial = Some(Arc::clone(&serial));
-                        this.add_port_dev(serial);
-                        info!("x86 16550 serial initialized for ports 0x3f8..=0x3ff");
-                    }
-                    #[cfg(not(target_arch = "x86_64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::X86IoApic => {
-                    #[cfg(target_arch = "x86_64")]
-                    {
-                        let ioapic = Arc::new(EmulatedIoApic::new(
-                            config.base_gpa.into(),
-                            Some(config.length),
-                        ));
-                        this.x86_ioapic = Some(Arc::clone(&ioapic));
-                        this.add_mmio_dev(ioapic);
-                        info!(
-                            "x86 IO APIC initialized with base GPA {:#x} and length {:#x}",
-                            config.base_gpa, config.length
-                        );
-                    }
-                    #[cfg(not(target_arch = "x86_64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::X86Pit => {
-                    #[cfg(target_arch = "x86_64")]
-                    {
-                        let pit = Arc::new(EmulatedPit::new());
-                        this.x86_pit = Some(Arc::clone(&pit));
-                        this.add_port_dev(pit);
-                        info!("x86 PIT initialized for ports 0x40..=0x43 and 0x61");
-                    }
-                    #[cfg(not(target_arch = "x86_64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
+                    warn!(
+                        "emu type: {} requires a registered platform factory",
+                        config.emu_type
+                    );
                 }
                 EmulatedDeviceType::IVCChannel => {
                     if this.ivc_channel.is_none() {
@@ -378,6 +351,7 @@ impl AxVmDevices {
                 }
             }
         }
+        Ok(())
     }
 
     /// Allocates an IVC (Inter-VM Communication) channel of the specified size.
@@ -428,19 +402,46 @@ impl AxVmDevices {
         }
     }
 
+    /// Registers a bundle atomically after validating all capabilities.
+    pub fn register_bundle(&mut self, bundle: DeviceBundle) -> AxResult {
+        self.emu_mmio_devices.validate_devices(&bundle.mmio)?;
+        self.emu_port_devices.validate_devices(&bundle.port)?;
+        self.emu_sys_reg_devices.validate_devices(&bundle.sysreg)?;
+
+        for (index, pollable) in bundle.pollable.iter().enumerate() {
+            if self
+                .pollable_devices
+                .iter()
+                .chain(bundle.pollable[..index].iter())
+                .any(|existing| Arc::ptr_eq(existing, pollable))
+            {
+                return ax_err!(
+                    AlreadyExists,
+                    "failed to register pollable device: the same capability is already registered"
+                );
+            }
+        }
+
+        self.emu_mmio_devices.commit_devices(bundle.mmio);
+        self.emu_port_devices.commit_devices(bundle.port);
+        self.emu_sys_reg_devices.commit_devices(bundle.sysreg);
+        self.pollable_devices.extend(bundle.pollable);
+        Ok(())
+    }
+
     /// Add a MMIO device to the device list
-    pub fn add_mmio_dev(&mut self, dev: Arc<dyn BaseMmioDeviceOps>) {
-        self.emu_mmio_devices.add_dev(dev);
+    pub fn add_mmio_dev(&mut self, dev: Arc<dyn BaseMmioDeviceOps>) -> AxResult {
+        self.register_bundle(DeviceRegistration::Mmio(dev).into())
     }
 
     /// Add a system register device to the device list
-    pub fn add_sys_reg_dev(&mut self, dev: Arc<dyn BaseSysRegDeviceOps>) {
-        self.emu_sys_reg_devices.add_dev(dev);
+    pub fn add_sys_reg_dev(&mut self, dev: Arc<dyn BaseSysRegDeviceOps>) -> AxResult {
+        self.register_bundle(DeviceRegistration::SysReg(dev).into())
     }
 
     /// Add a port device to the device list
-    pub fn add_port_dev(&mut self, dev: Arc<dyn BasePortDeviceOps>) {
-        self.emu_port_devices.add_dev(dev);
+    pub fn add_port_dev(&mut self, dev: Arc<dyn BasePortDeviceOps>) -> AxResult {
+        self.register_bundle(DeviceRegistration::Port(dev).into())
     }
 
     /// Iterates over the MMIO devices in the set.
@@ -458,44 +459,9 @@ impl AxVmDevices {
         self.emu_port_devices.iter()
     }
 
-    /// Returns the guest vector programmed for an x86 IOAPIC GSI.
-    #[cfg(target_arch = "x86_64")]
-    pub fn x86_ioapic_vector_for_gsi(&self, gsi: usize) -> Option<u8> {
-        self.x86_ioapic
-            .as_ref()
-            .and_then(|ioapic| ioapic.vector_for_gsi(gsi))
-    }
-
-    /// Assert an x86 IOAPIC GSI and return the interrupt to inject.
-    #[cfg(target_arch = "x86_64")]
-    pub fn x86_ioapic_assert_gsi(&self, gsi: usize) -> Option<IoApicInterrupt> {
-        self.x86_ioapic
-            .as_ref()
-            .and_then(|ioapic| ioapic.assert_gsi(gsi))
-    }
-
-    /// Broadcast an x86 local APIC EOI to the virtual IOAPIC.
-    #[cfg(target_arch = "x86_64")]
-    pub fn x86_ioapic_end_of_interrupt(&self, vector: u8) -> Option<IoApicInterrupt> {
-        self.x86_ioapic
-            .as_ref()
-            .and_then(|ioapic| ioapic.end_of_interrupt(vector))
-    }
-
-    /// Consume a pending x86 PIT channel 0 timer tick if the deadline is due.
-    #[cfg(target_arch = "x86_64")]
-    pub fn x86_pit_consume_irq0_if_due(&self, now_ns: u64) -> bool {
-        self.x86_pit
-            .as_ref()
-            .is_some_and(|pit| pit.consume_irq0_if_due(now_ns))
-    }
-
-    /// Poll x86 COM1 and return whether it has a pending RX interrupt.
-    #[cfg(target_arch = "x86_64")]
-    pub fn x86_serial_poll_irq(&self) -> bool {
-        self.x86_serial
-            .as_ref()
-            .is_some_and(|serial| serial.poll_irq())
+    /// Iterates over devices that require periodic polling.
+    pub fn iter_pollable_dev(&self) -> impl Iterator<Item = &Arc<dyn PollableDeviceOps>> {
+        self.pollable_devices.iter()
     }
 
     /// Iterates over the MMIO devices in the set.

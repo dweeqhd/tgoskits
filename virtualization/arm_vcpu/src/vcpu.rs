@@ -151,8 +151,7 @@ impl axvcpu::AxArchVCpu for Aarch64VCpu {
     }
 
     fn inject_interrupt(&mut self, vector: usize) -> AxResult {
-        crate::host::hardware_inject_virtual_interrupt(vector as u8);
-        Ok(())
+        crate::host::hardware_inject_virtual_interrupt(vector)
     }
 
     fn set_return_value(&mut self, val: usize) {

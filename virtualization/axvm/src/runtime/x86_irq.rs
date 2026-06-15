@@ -3,121 +3,81 @@ use core::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
+use axvm_types::VMInterruptMode;
+
 use crate::{
-    InterruptTriggerMode,
-    config::VMInterruptMode,
     host::irq,
+    irq::x86::{HOST_IOAPIC_GSI_COUNT, HOST_IOAPIC_VECTOR_BASE, host_vector_to_gsi},
     runtime::{VCpuRef, VMRef},
 };
 
-const IOAPIC_VECTOR_BASE: usize = 0x20;
-const IOAPIC_GSI_COUNT: usize = 24;
-const IOAPIC_VECTOR_END: usize = IOAPIC_VECTOR_BASE + IOAPIC_GSI_COUNT;
-
 const PIT_TIMER_GSI: usize = 0;
-const COM1_GSI: usize = 4;
 static IOAPIC_IRQ_FORWARDING_ENABLED: AtomicBool = AtomicBool::new(false);
 static IOAPIC_IRQ_HOOK_REGISTERED: AtomicBool = AtomicBool::new(false);
 static IOAPIC_IRQ_FORWARD_VM_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
-static IOAPIC_IRQ_FORWARD_VCPU_ID: AtomicUsize = AtomicUsize::new(usize::MAX);
 static IOAPIC_IRQ_PENDING: AtomicUsize = AtomicUsize::new(0);
-static IOAPIC_IRQ_HANDLES: [AtomicUsize; IOAPIC_GSI_COUNT] =
-    [const { AtomicUsize::new(0) }; IOAPIC_GSI_COUNT];
+static IOAPIC_IRQ_HANDLES: [AtomicUsize; HOST_IOAPIC_GSI_COUNT] =
+    [const { AtomicUsize::new(0) }; HOST_IOAPIC_GSI_COUNT];
 
-pub fn forward_passthrough_irq_from_vmexit(vm: &VMRef, vcpu: &VCpuRef, vector: usize) {
-    if vector == IOAPIC_VECTOR_BASE + PIT_TIMER_GSI {
+pub fn poll_devices(vm: &VMRef) {
+    let now_ns = crate::host::arceos::monotonic_time_nanos();
+    for device in vm.get_devices().iter_pollable_dev() {
+        if let Err(err) = device.poll(now_ns) {
+            warn!("failed to poll a VM[{}] device: {err:?}", vm.id());
+        }
+    }
+}
+
+pub fn drain_routed_irqs(vm: &crate::AxVM, vcpu: &VCpuRef) {
+    if let Err(err) = vm.interrupt_fabric().drain_pending(vcpu.id(), |irq| {
+        vcpu.inject_interrupt_with_trigger(irq.vector, irq.trigger)
+    }) {
+        warn!(
+            "failed to drain routed interrupts for VM[{}] VCpu[{}]: {err:?}",
+            vm.id(),
+            vcpu.id()
+        );
+    }
+}
+
+pub fn forward_passthrough_irq_from_vmexit(vm: &VMRef, vector: usize) {
+    if vm.interrupt_mode() != VMInterruptMode::Passthrough
+        || !vm.interrupt_fabric().has_controller()
+    {
+        return;
+    }
+
+    if vector == HOST_IOAPIC_VECTOR_BASE + PIT_TIMER_GSI {
         return;
     }
 
     if !ioapic_irq_hook_registered(vector) {
-        forward_passthrough_irq(vm, vcpu, vector);
+        forward_host_vector(vm, vector);
     }
 }
 
-pub fn inject_due_pit_irq0(vm: &VMRef, vcpu: &VCpuRef) {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
-        return;
+pub fn handle_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8) {
+    if let Err(err) = vm.interrupt_fabric().eoi(vcpu.id(), vector) {
+        warn!(
+            "failed to process VM[{}] VCpu[{}] EOI for vector {vector:#x}: {err:?}",
+            vm.id(),
+            vcpu.id()
+        );
     }
-
-    let now_ns = crate::host::arceos::monotonic_time_nanos();
-    if !vm.get_devices().x86_pit_consume_irq0_if_due(now_ns) {
-        return;
-    }
-
-    let Some(irq) = vm.get_devices().x86_ioapic_assert_gsi(PIT_TIMER_GSI) else {
-        trace!("x86 PIT IRQ0 due but vIOAPIC GSI0 is not ready");
-        return;
-    };
-
-    vcpu.inject_interrupt_with_trigger(
-        irq.vector as _,
-        if irq.level_triggered {
-            InterruptTriggerMode::LevelTriggered
-        } else {
-            InterruptTriggerMode::EdgeTriggered
-        },
-    )
-    .unwrap();
 }
 
-pub fn inject_pending_serial_irq(vm: &VMRef, vcpu: &VCpuRef) {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+pub fn drain_pending_ioapic_irqs(vm: &VMRef) {
+    if vm.interrupt_mode() != VMInterruptMode::Passthrough
+        || !vm.interrupt_fabric().has_controller()
+    {
         return;
     }
 
-    if !vm.get_devices().x86_serial_poll_irq() {
-        return;
-    }
-
-    let Some(irq) = vm.get_devices().x86_ioapic_assert_gsi(COM1_GSI) else {
-        trace!("x86 COM1 RX pending but vIOAPIC GSI4 is not ready");
-        return;
-    };
-
-    trace!("Injecting x86 COM1 RX IRQ vector {:#x}", irq.vector);
-    vcpu.inject_interrupt_with_trigger(
-        irq.vector as _,
-        if irq.level_triggered {
-            InterruptTriggerMode::LevelTriggered
-        } else {
-            InterruptTriggerMode::EdgeTriggered
-        },
-    )
-    .unwrap();
-}
-
-pub fn inject_pending_ioapic_irq_after_eoi(vm: &VMRef, vcpu: &VCpuRef, vector: u8) {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
-        return;
-    }
-
-    let Some(irq) = vm.get_devices().x86_ioapic_end_of_interrupt(vector) else {
-        return;
-    };
-
-    trace!(
-        "Injecting pending x86 IOAPIC level IRQ vector {:#x} after EOI {vector:#x}",
-        irq.vector
-    );
-    vcpu.inject_interrupt_with_trigger(
-        irq.vector as _,
-        if irq.level_triggered {
-            InterruptTriggerMode::LevelTriggered
-        } else {
-            InterruptTriggerMode::EdgeTriggered
-        },
-    )
-    .unwrap();
-}
-
-pub fn drain_pending_ioapic_irqs(vm: &VMRef, vcpu: &VCpuRef) {
     if !IOAPIC_IRQ_HOOK_REGISTERED.load(Ordering::Acquire) {
         return;
     }
 
-    if IOAPIC_IRQ_FORWARD_VM_ID.load(Ordering::Acquire) != vm.id()
-        || IOAPIC_IRQ_FORWARD_VCPU_ID.load(Ordering::Acquire) != vcpu.id()
-    {
+    if IOAPIC_IRQ_FORWARD_VM_ID.load(Ordering::Acquire) != vm.id() {
         return;
     }
 
@@ -127,21 +87,44 @@ pub fn drain_pending_ioapic_irqs(vm: &VMRef, vcpu: &VCpuRef) {
             break;
         }
 
-        for gsi in 0..IOAPIC_GSI_COUNT {
-            if pending & (1usize << gsi) != 0 {
-                forward_passthrough_irq(vm, vcpu, IOAPIC_VECTOR_BASE + gsi);
+        for gsi in 0..HOST_IOAPIC_GSI_COUNT {
+            if pending & (1usize << gsi) == 0 {
+                continue;
+            }
+            if let Err(err) = vm.interrupt_fabric().forward_host_irq(gsi) {
+                trace!(
+                    "VM[{}] host GSI {gsi} has no injectable virtual IO APIC route: {err:?}",
+                    vm.id()
+                );
             }
         }
     }
 }
 
-pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
+pub fn enable_ioapic_irq_forwarding(vm: &VMRef) {
+    if vm.interrupt_mode() != VMInterruptMode::Passthrough
+        || !vm.interrupt_fabric().has_controller()
+    {
         return;
     }
 
-    IOAPIC_IRQ_FORWARD_VM_ID.store(vm.id(), Ordering::Release);
-    IOAPIC_IRQ_FORWARD_VCPU_ID.store(vcpu.id(), Ordering::Release);
+    match IOAPIC_IRQ_FORWARD_VM_ID.compare_exchange(
+        usize::MAX,
+        vm.id(),
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    ) {
+        Ok(_) => {}
+        Err(current_vm_id) if current_vm_id == vm.id() => {}
+        Err(current_vm_id) => {
+            warn!(
+                "cannot enable host IOAPIC forwarding for VM[{}]: VM[{current_vm_id}] already \
+                 owns the forwarding target",
+                vm.id()
+            );
+            return;
+        }
+    }
 
     if IOAPIC_IRQ_FORWARDING_ENABLED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
@@ -151,8 +134,8 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
     }
 
     let mut registered = 0;
-    for vector in IOAPIC_VECTOR_BASE..IOAPIC_VECTOR_END {
-        let gsi = vector - IOAPIC_VECTOR_BASE;
+    for vector in HOST_IOAPIC_VECTOR_BASE..HOST_IOAPIC_VECTOR_BASE + HOST_IOAPIC_GSI_COUNT {
+        let gsi = vector - HOST_IOAPIC_VECTOR_BASE;
         if IOAPIC_IRQ_HANDLES[gsi].load(Ordering::Acquire) != 0 {
             continue;
         }
@@ -171,21 +154,29 @@ pub fn enable_ioapic_irq_forwarding(vm: &VMRef, vcpu: &VCpuRef) {
     }
     if registered != 0 {
         IOAPIC_IRQ_HOOK_REGISTERED.store(true, Ordering::Release);
+    } else {
+        IOAPIC_IRQ_FORWARDING_ENABLED.store(false, Ordering::Release);
+        let _ = IOAPIC_IRQ_FORWARD_VM_ID.compare_exchange(
+            vm.id(),
+            usize::MAX,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        warn!("failed to register any x86 IOAPIC forwarding IRQ actions");
+        return;
     }
     info!(
         "Enabled x86 IOAPIC IRQ forwarding for host vectors {:#x}..{:#x} ({} newly registered)",
-        IOAPIC_VECTOR_BASE,
-        IOAPIC_VECTOR_END - 1,
+        HOST_IOAPIC_VECTOR_BASE,
+        HOST_IOAPIC_VECTOR_BASE + HOST_IOAPIC_GSI_COUNT - 1,
         registered
     );
 }
 
 fn ioapic_irq_hook_registered(vector: usize) -> bool {
-    if !(IOAPIC_VECTOR_BASE..IOAPIC_VECTOR_END).contains(&vector) {
+    let Some(gsi) = host_vector_to_gsi(vector) else {
         return false;
-    }
-
-    let gsi = vector - IOAPIC_VECTOR_BASE;
+    };
     IOAPIC_IRQ_HANDLES[gsi].load(Ordering::Acquire) != 0
 }
 
@@ -195,55 +186,33 @@ pub fn disable_ioapic_irq_forwarding_for_vm(vm_id: usize) {
     }
 
     IOAPIC_IRQ_FORWARD_VM_ID.store(usize::MAX, Ordering::Release);
-    IOAPIC_IRQ_FORWARD_VCPU_ID.store(usize::MAX, Ordering::Release);
     IOAPIC_IRQ_PENDING.store(0, Ordering::Release);
 }
 
-fn forward_passthrough_irq(vm: &VMRef, vcpu: &VCpuRef, vector: usize) {
-    if vm.interrupt_mode() != VMInterruptMode::Passthrough {
-        return;
-    }
-
-    if !(IOAPIC_VECTOR_BASE..IOAPIC_VECTOR_END).contains(&vector) {
-        return;
-    }
-
-    let host_gsi = vector - IOAPIC_VECTOR_BASE;
-    let Some(guest_irq) = vm.get_devices().x86_ioapic_assert_gsi(host_gsi) else {
-        trace!(
-            "x86 passthrough IRQ vector {vector:#x} has no injectable guest vIOAPIC route for \
-             host GSI {host_gsi}"
-        );
+fn forward_host_vector(vm: &VMRef, vector: usize) {
+    let Some(host_gsi) = host_vector_to_gsi(vector) else {
         return;
     };
-
-    vcpu.inject_interrupt_with_trigger(
-        guest_irq.vector as _,
-        if guest_irq.level_triggered {
-            InterruptTriggerMode::LevelTriggered
-        } else {
-            InterruptTriggerMode::EdgeTriggered
-        },
-    )
-    .unwrap();
+    if let Err(err) = vm.interrupt_fabric().forward_host_irq(host_gsi) {
+        trace!(
+            "VM[{}] passthrough vector {vector:#x} host GSI {host_gsi} is not routable: {err:?}",
+            vm.id()
+        );
+    }
 }
 
 unsafe fn ioapic_irq_forwarding_handler(
     ctx: irq::IrqContext,
     _data: NonNull<()>,
 ) -> irq::IrqReturn {
-    let vector = ctx.irq.0;
-    if !(IOAPIC_VECTOR_BASE..IOAPIC_VECTOR_END).contains(&vector) {
+    let Some(gsi) = host_vector_to_gsi(ctx.irq.0) else {
+        return irq::IrqReturn::Unhandled;
+    };
+
+    if IOAPIC_IRQ_FORWARD_VM_ID.load(Ordering::Acquire) == usize::MAX {
         return irq::IrqReturn::Unhandled;
     }
 
-    if IOAPIC_IRQ_FORWARD_VM_ID.load(Ordering::Acquire) == usize::MAX
-        || IOAPIC_IRQ_FORWARD_VCPU_ID.load(Ordering::Acquire) == usize::MAX
-    {
-        return irq::IrqReturn::Unhandled;
-    }
-
-    let bit = 1usize << (vector - IOAPIC_VECTOR_BASE);
-    IOAPIC_IRQ_PENDING.fetch_or(bit, Ordering::AcqRel);
+    IOAPIC_IRQ_PENDING.fetch_or(1usize << gsi, Ordering::AcqRel);
     irq::IrqReturn::Handled
 }

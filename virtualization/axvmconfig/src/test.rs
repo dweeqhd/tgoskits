@@ -13,8 +13,8 @@
 // limitations under the License.
 
 use crate::{
-    AxVMCrateConfig, EmulatedDeviceType, VMBootProtocol, VMDevicesConfig, VMInterruptMode,
-    VmMemMappingType,
+    AxVMCrateConfig, EmulatedDeviceType, InterruptTriggerMode, VMBootProtocol, VMDevicesConfig,
+    VMInterruptMode, VmMemMappingType,
 };
 
 #[test]
@@ -274,6 +274,110 @@ emu_devices = [
 }
 
 #[test]
+fn test_named_device_irq_config_deser() {
+    const EXAMPLE_DEVICE_CONFIG: &str = r#"
+passthrough_devices = []
+emu_devices = [
+    ["single-irq", 0x1000, 0x1000, 0, 0xe2, [], [["irq", 5, "edge"]]],
+    ["multi-irq", 0x2000, 0x1000, 0, 0xe2, [], [
+        ["rx", 6, "level"],
+        ["tx", 7, "edge"],
+    ]],
+]
+    "#;
+
+    let config: VMDevicesConfig = toml::from_str(EXAMPLE_DEVICE_CONFIG).unwrap();
+    assert_eq!(config.emu_devices[0].irqs.len(), 1);
+    assert_eq!(config.emu_devices[0].irqs[0].name, "irq");
+    assert_eq!(config.emu_devices[0].irqs[0].line, 5);
+    assert_eq!(
+        config.emu_devices[0].irqs[0].trigger,
+        InterruptTriggerMode::EdgeTriggered
+    );
+    assert_eq!(config.emu_devices[1].irqs.len(), 2);
+    assert_eq!(config.emu_devices[1].irqs[0].name, "rx");
+    assert_eq!(
+        config.emu_devices[1].irqs[0].trigger,
+        InterruptTriggerMode::LevelTriggered
+    );
+    assert_eq!(config.emu_devices[1].irqs[1].name, "tx");
+}
+
+#[test]
+fn test_rejects_duplicate_device_irq_names_and_lines() {
+    const DUPLICATE_NAME: &str = r#"
+passthrough_devices = []
+emu_devices = [
+    ["bad", 0x1000, 0x1000, 0, 0xe2, [], [
+        ["irq", 5, "edge"],
+        ["irq", 6, "level"],
+    ]],
+]
+    "#;
+    const DUPLICATE_LINE: &str = r#"
+passthrough_devices = []
+emu_devices = [
+    ["bad", 0x1000, 0x1000, 0, 0xe2, [], [
+        ["rx", 5, "edge"],
+        ["tx", 5, "level"],
+    ]],
+]
+    "#;
+
+    assert!(toml::from_str::<VMDevicesConfig>(DUPLICATE_NAME).is_err());
+    assert!(toml::from_str::<VMDevicesConfig>(DUPLICATE_LINE).is_err());
+}
+
+#[test]
+fn test_rejects_invalid_device_irq_trigger() {
+    const INVALID_TRIGGER: &str = r#"
+passthrough_devices = []
+emu_devices = [
+    ["bad", 0x1000, 0x1000, 0, 0xe2, [], [["irq", 5, "pulse"]]],
+]
+    "#;
+
+    assert!(toml::from_str::<VMDevicesConfig>(INVALID_TRIGGER).is_err());
+}
+
+#[test]
+fn test_rejects_conflicting_legacy_and_named_device_irq() {
+    const CONFLICTING_IRQ: &str = r#"
+passthrough_devices = []
+emu_devices = [
+    ["bad", 0x1000, 0x1000, 5, 0xe2, [], [["irq", 6, "edge"]]],
+]
+    "#;
+    const CONSISTENT_IRQ: &str = r#"
+passthrough_devices = []
+emu_devices = [
+    ["good", 0x1000, 0x1000, 5, 0xe2, [], [["irq", 5, "edge"]]],
+]
+    "#;
+
+    assert!(toml::from_str::<VMDevicesConfig>(CONFLICTING_IRQ).is_err());
+    assert!(toml::from_str::<VMDevicesConfig>(CONSISTENT_IRQ).is_ok());
+}
+
+#[test]
+fn test_named_device_irq_config_round_trip() {
+    const EXAMPLE_DEVICE_CONFIG: &str = r#"
+passthrough_devices = []
+emu_devices = [
+    ["multi-irq", 0x2000, 0x1000, 0, 0xe2, [], [
+        ["rx", 6, "level"],
+        ["tx", 7, "edge"],
+    ]],
+]
+    "#;
+
+    let config: VMDevicesConfig = toml::from_str(EXAMPLE_DEVICE_CONFIG).unwrap();
+    let serialized = toml::to_string(&config).unwrap();
+    let reparsed: VMDevicesConfig = toml::from_str(&serialized).unwrap();
+    assert_eq!(reparsed.emu_devices, config.emu_devices);
+}
+
+#[test]
 fn test_rejects_incomplete_explicit_passthrough_device() {
     const EXAMPLE_DEVICE_CONFIG: &str = r#"
 passthrough_devices = [
@@ -449,6 +553,7 @@ fn test_default_implementations() {
     assert_eq!(emu_device_config.base_gpa, 0);
     assert_eq!(emu_device_config.length, 0);
     assert_eq!(emu_device_config.irq_id, 0);
+    assert!(emu_device_config.irqs.is_empty());
     assert_eq!(emu_device_config.emu_type, EmulatedDeviceType::Dummy);
     assert!(emu_device_config.cfg_list.is_empty());
 

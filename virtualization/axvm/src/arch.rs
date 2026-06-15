@@ -124,17 +124,10 @@ mod x86_64 {
 mod riscv64 {
     use ax_crate_interface::impl_interface;
     use ax_memory_addr::{PhysAddr, VirtAddr};
-    #[cfg(feature = "plat-dyn")]
-    use axdevice_base::AccessWidth;
-    #[cfg(feature = "plat-dyn")]
-    use axvm_types::GuestPhysAddr;
     use riscv_vcpu::host::RiscvVcpuHostIf;
     use riscv_vplic::host::RiscvVplicHostIf;
 
     use crate::host::{HostMemory, default_host};
-
-    #[cfg(feature = "plat-dyn")]
-    const GUEST_PLIC_PADDR: usize = 0x0c00_0000;
 
     struct RiscvVcpuHostIfImpl;
 
@@ -172,19 +165,7 @@ mod riscv64 {
         };
 
         let Some(injected) = crate::manager::with_vm(vm_id, |vm| {
-            let Some(vplic) = vm
-                .get_devices()
-                .find_mmio_dev(GuestPhysAddr::from_usize(GUEST_PLIC_PADDR))
-            else {
-                warn!("VM[{vm_id}] has no virtual PLIC device");
-                return false;
-            };
-
-            let reg_offset = riscv_vplic::PLIC_PENDING_OFFSET + (irq_id / 32) * 4;
-            let addr = GuestPhysAddr::from_usize(GUEST_PLIC_PADDR + reg_offset);
-            let val: u32 = 1 << (irq_id % 32);
-
-            if let Err(err) = vplic.handle_write(addr, AccessWidth::Dword, val as _) {
+            if let Err(err) = vm.interrupt_fabric().pulse(irq_id) {
                 warn!("failed to inject RISC-V virtual IRQ {irq_id}: {err:?}");
                 return false;
             }
@@ -232,6 +213,7 @@ mod aarch64 {
     use arm_vcpu::host::ArmVcpuHostIf;
     use arm_vgic::host::ArmVgicHostIf;
     use ax_crate_interface::impl_interface;
+    use ax_errno::AxResult;
     use ax_memory_addr::{PhysAddr, VirtAddr};
 
     use crate::host::{HostCpu, HostMemory, HostTime, default_host, gic};
@@ -240,8 +222,8 @@ mod aarch64 {
 
     #[impl_interface]
     impl ArmVcpuHostIf for ArmVcpuHostIfImpl {
-        fn hardware_inject_virtual_interrupt(vector: u8) {
-            gic::inject_interrupt(vector as usize);
+        fn hardware_inject_virtual_interrupt(vector: usize) -> AxResult {
+            gic::inject_interrupt(vector)
         }
 
         fn fetch_irq() -> usize {
@@ -277,6 +259,10 @@ mod aarch64 {
             crate::current_vcpu_id().expect("current AArch64 vCPU is not set")
         }
 
+        fn current_vm_id() -> usize {
+            crate::current_vm_id().expect("current AArch64 VM is not set")
+        }
+
         fn current_time_nanos() -> u64 {
             default_host().monotonic_time().as_nanos() as u64
         }
@@ -304,8 +290,12 @@ mod aarch64 {
             gic::host_gicr_base()
         }
 
-        fn hardware_inject_virtual_interrupt(vector: u8) {
-            gic::inject_interrupt(vector as usize);
+        fn hardware_inject_virtual_interrupt(vector: usize) -> AxResult {
+            gic::inject_interrupt(vector)
+        }
+
+        fn queue_virtual_interrupt(vm_id: usize, vcpu_id: usize, vector: usize) -> AxResult {
+            crate::runtime::vcpus::queue_interrupt(vm_id, vcpu_id, vector)
         }
     }
 }

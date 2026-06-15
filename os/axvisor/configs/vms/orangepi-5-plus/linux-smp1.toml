@@ -53,8 +53,8 @@ interrupt_mode = "passthrough"
 # Emu_devices.
 # Name Base-Ipa Ipa_len Alloc-Irq Emu-Type EmuConfig.
 emu_devices = [
-  ["gppt-gicd", 0xfe60_0000, 0x1_0000, 0, 0x21, []],
-  ["gppt-gicr", 0xfe68_0000, 0x2_0000, 0, 0x20, [1, 0x2_0000, 0]],
+  ["gppt-gicd", 0xfe60_0000, 0x1_0000, 0, 0x21, [], []],
+  ["gppt-gicr", 0xfe68_0000, 0x2_0000, 0, 0x20, [1, 0x2_0000, 0], []],
   # ["gppt-gits", 0xfe64_0000, 0x2_0000, 0, 0x22, [0xfe64_0000]],
 ]
 

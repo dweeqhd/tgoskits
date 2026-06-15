@@ -35,6 +35,34 @@ pub type VCpuId = usize;
 /// Interrupt vector number injected into a guest.
 pub type InterruptVector = u8;
 
+/// Interrupt trigger mode.
+///
+/// Represents the trigger mode of an interrupt in a platform-neutral way.
+/// Architectures that do not distinguish between edge and level triggering
+/// can ignore this parameter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterruptTriggerMode {
+    /// Edge-triggered interrupt.
+    EdgeTriggered,
+    /// Level-triggered interrupt.
+    LevelTriggered,
+}
+
+/// Identifier of an interrupt line within a virtual machine.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IrqLineId(pub usize);
+
+/// Configuration for one named interrupt output of an emulated device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceIrqConfig {
+    /// Device-local name of the interrupt output.
+    pub name: String,
+    /// VM-local interrupt line number.
+    pub line: usize,
+    /// Interrupt trigger mode.
+    pub trigger: InterruptTriggerMode,
+}
+
 /// The maximum number of virtual CPUs supported in a virtual machine.
 pub const MAX_VCPU_NUM: usize = 64;
 
@@ -128,7 +156,7 @@ pub struct VmMemConfig {
 }
 
 /// A part of `AxVMConfig`, which represents the configuration of an emulated device for a virtual machine.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct EmulatedDeviceConfig {
     /// The name of the device.
     pub name: String,
@@ -138,6 +166,8 @@ pub struct EmulatedDeviceConfig {
     pub length: usize,
     /// The IRQ (Interrupt Request) ID of the device.
     pub irq_id: usize,
+    /// Named interrupt outputs of the device.
+    pub irqs: Vec<DeviceIrqConfig>,
     /// The type of emulated device.
     pub emu_type: EmulatedDeviceType,
     /// The config list of the device.

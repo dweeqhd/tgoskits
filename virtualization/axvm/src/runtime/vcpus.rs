@@ -102,6 +102,13 @@ impl VMVCpus {
             .unwrap_or_default()
     }
 
+    fn requeue_pending_interrupts(&self, vcpu_id: usize, mut retry: Vec<usize>) {
+        let mut pending = self.pending_interrupts.lock();
+        let queued = pending.entry(vcpu_id).or_default();
+        retry.append(queued);
+        *queued = retry;
+    }
+
     /// Blocks the current thread on the wait queue associated with the VCpus of this VM.
     fn wait(&self) {
         self.wait_queue.wait()
@@ -228,13 +235,21 @@ pub(crate) fn inject_pending_interrupts(vm_id: usize, vcpu_id: usize, vcpu: &VCp
         return;
     };
 
-    for vector in vm_vcpus.drain_pending_interrupts(vcpu_id) {
+    let mut pending = vm_vcpus.drain_pending_interrupts(vcpu_id).into_iter();
+    while let Some(vector) = pending.next() {
         trace!("Injecting queued interrupt {vector:#x} into VM[{vm_id}] VCpu[{vcpu_id}]");
         if let Err(err) = vcpu.inject_interrupt(vector) {
             warn!(
                 "Failed to inject queued interrupt {vector:#x} into VM[{vm_id}] VCpu[{vcpu_id}]: \
                  {err:?}"
             );
+            if err == ax_errno::AxError::WouldBlock {
+                let mut retry = Vec::with_capacity(1 + pending.len());
+                retry.push(vector);
+                retry.extend(pending);
+                vm_vcpus.requeue_pending_interrupts(vcpu_id, retry);
+            }
+            break;
         }
     }
 }
@@ -472,14 +487,18 @@ fn vcpu_run() {
 
     info!("VM[{}] VCpu[{}] running...", vm.id(), vcpu.id());
     #[cfg(target_arch = "x86_64")]
-    super::x86_irq::enable_ioapic_irq_forwarding(&vm, &vcpu);
+    super::x86_irq::enable_ioapic_irq_forwarding(&vm);
     mark_vcpu_running(vm_id);
 
     loop {
         inject_pending_interrupts(vm_id, vcpu_id, &vcpu);
 
         #[cfg(target_arch = "x86_64")]
-        super::x86_irq::drain_pending_ioapic_irqs(&vm, &vcpu);
+        {
+            super::x86_irq::poll_devices(&vm);
+            super::x86_irq::drain_pending_ioapic_irqs(&vm);
+            super::x86_irq::drain_routed_irqs(&vm, &vcpu);
+        }
 
         match vm.run_vcpu(vcpu_id) {
             Ok(exit_reason) => match exit_reason {
@@ -524,33 +543,19 @@ fn vcpu_run() {
                     });
                     crate::check_timer_events();
                     #[cfg(target_arch = "x86_64")]
-                    super::x86_irq::forward_passthrough_irq_from_vmexit(
-                        &vm,
-                        &vcpu,
-                        vector as usize,
-                    );
-                    #[cfg(target_arch = "x86_64")]
-                    super::x86_irq::inject_pending_serial_irq(&vm, &vcpu);
+                    super::x86_irq::forward_passthrough_irq_from_vmexit(&vm, vector as usize);
                 }
                 AxVCpuExitReason::PreemptionTimer => {
                     crate::timer::check_events();
-                    #[cfg(target_arch = "x86_64")]
-                    super::x86_irq::inject_due_pit_irq0(&vm, &vcpu);
-                    #[cfg(target_arch = "x86_64")]
-                    super::x86_irq::inject_pending_serial_irq(&vm, &vcpu);
                 }
                 AxVCpuExitReason::InterruptEnd { vector: _vector } => {
                     #[cfg(target_arch = "x86_64")]
                     if let Some(vector) = _vector {
-                        super::x86_irq::inject_pending_ioapic_irq_after_eoi(&vm, &vcpu, vector);
+                        super::x86_irq::handle_eoi(&vm, &vcpu, vector);
                     }
                 }
                 AxVCpuExitReason::Halt => {
                     debug!("VM[{vm_id}] run VCpu[{vcpu_id}] Halt");
-                    #[cfg(target_arch = "x86_64")]
-                    super::x86_irq::inject_due_pit_irq0(&vm, &vcpu);
-                    #[cfg(target_arch = "x86_64")]
-                    super::x86_irq::inject_pending_serial_irq(&vm, &vcpu);
                     #[cfg(target_arch = "x86_64")]
                     continue;
                     #[cfg(not(target_arch = "x86_64"))]
