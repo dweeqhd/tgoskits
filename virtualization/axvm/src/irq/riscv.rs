@@ -66,6 +66,7 @@ impl DeviceFactory for RiscvPlicFactory {
         if config.base_gpa != self.base_gpa
             || config.length != self.length
             || config.cfg_list.as_slice() != [self.contexts_num]
+            || !config.irqs.is_empty()
         {
             return ax_err!(
                 InvalidInput,
@@ -80,6 +81,15 @@ impl DeviceFactory for RiscvPlicFactory {
 }
 
 fn validate_vplic_config(config: &EmulatedDeviceConfig) -> AxResult<usize> {
+    if !config.irqs.is_empty() {
+        return ax_err!(
+            InvalidInput,
+            format_args!(
+                "virtual PLIC device '{}' does not expose device IRQ outputs",
+                config.name
+            )
+        );
+    }
     let [contexts_num] = config.cfg_list.as_slice() else {
         return ax_err!(
             InvalidInput,

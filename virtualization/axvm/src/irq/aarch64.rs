@@ -220,6 +220,7 @@ mod platform {
             config: &EmulatedDeviceConfig,
             _context: &DeviceBuildContext<'_>,
         ) -> AxResult<DeviceBundle> {
+            validate_no_irq_outputs(config, "GPPT redistributor")?;
             let [cpu_count, stride, first_pcpu_id] = config.cfg_list.as_slice() else {
                 return ax_err!(
                     InvalidInput,
@@ -279,6 +280,7 @@ mod platform {
             config: &EmulatedDeviceConfig,
             _context: &DeviceBuildContext<'_>,
         ) -> AxResult<DeviceBundle> {
+            validate_no_irq_outputs(config, "GPPT distributor")?;
             validate_mmio_range(config, "GPPT distributor")?;
             if !config.cfg_list.is_empty() {
                 return ax_err!(
@@ -310,6 +312,7 @@ mod platform {
             config: &EmulatedDeviceConfig,
             _context: &DeviceBuildContext<'_>,
         ) -> AxResult<DeviceBundle> {
+            validate_no_irq_outputs(config, "GPPT ITS")?;
             validate_mmio_range(config, "GPPT ITS")?;
             let [host_gits_base] = config.cfg_list.as_slice() else {
                 return ax_err!(
@@ -337,6 +340,19 @@ mod platform {
                 InvalidInput,
                 format_args!(
                     "{device_type} device '{}' has an invalid MMIO range",
+                    config.name
+                )
+            );
+        }
+        Ok(())
+    }
+
+    fn validate_no_irq_outputs(config: &EmulatedDeviceConfig, device_type: &str) -> AxResult {
+        if !config.irqs.is_empty() {
+            return ax_err!(
+                InvalidInput,
+                format_args!(
+                    "{device_type} device '{}' does not expose device IRQ outputs",
                     config.name
                 )
             );

@@ -28,7 +28,8 @@ use axdevice_base::{
 };
 use axvm::InterruptFabric;
 use axvm_types::{
-    EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, VMInterruptMode,
+    DeviceIrqConfig, EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange,
+    VMInterruptMode,
 };
 use x86_vlapic::{EmulatedIoApic, EmulatedPit, EmulatedSerialPort, IoApicInterrupt};
 
@@ -175,7 +176,12 @@ impl DeviceFactory for IrqMmioFactory {
         let Some(end) = config.base_gpa.checked_add(config.length) else {
             return Err(AxError::InvalidInput);
         };
-        let line = context.resolve_irq(config.irq_id, InterruptTriggerMode::EdgeTriggered)?;
+        let line = context.resolve_config_irq(
+            config,
+            "irq",
+            config.irq_id,
+            InterruptTriggerMode::EdgeTriggered,
+        )?;
         Ok(DeviceRegistration::Mmio(Arc::new(IrqMmioDevice {
             range: GuestPhysAddrRange::new(config.base_gpa.into(), end.into()),
             line,
@@ -190,9 +196,25 @@ fn irq_device_config(base_gpa: usize, irq_id: usize) -> EmulatedDeviceConfig {
         base_gpa,
         length: 0x1000,
         irq_id,
+        irqs: vec![],
         emu_type: EmulatedDeviceType::VirtioNet,
         cfg_list: vec![],
     }
+}
+
+fn named_irq_device_config(
+    base_gpa: usize,
+    name: &str,
+    line: usize,
+    trigger: InterruptTriggerMode,
+) -> EmulatedDeviceConfig {
+    let mut config = irq_device_config(base_gpa, 0);
+    config.irqs.push(DeviceIrqConfig {
+        name: String::from(name),
+        line,
+        trigger,
+    });
+    config
 }
 
 fn irq_factory_registry() -> DeviceFactoryRegistry {
@@ -294,6 +316,81 @@ fn test_factory_device_emits_irq_through_interrupt_fabric() {
     assert_eq!(
         sink.upgrade().unwrap().events(),
         vec![IrqEvent::Pulse(IrqLineId(15))]
+    );
+}
+
+#[test]
+fn test_factory_device_uses_named_irq_config() {
+    let (fabric, sink) = recording_fabric(VMInterruptMode::Emulated);
+    let devices = {
+        let context = DeviceBuildContext::new(&fabric);
+        AxVmDevices::build_with_factories(
+            AxVmDeviceConfig::new(vec![named_irq_device_config(
+                0x7_1000,
+                "irq",
+                18,
+                InterruptTriggerMode::EdgeTriggered,
+            )]),
+            &irq_factory_registry(),
+            &context,
+        )
+        .unwrap()
+    };
+
+    devices
+        .handle_mmio_write(GuestPhysAddr::from(0x7_1000), AccessWidth::Dword, 1)
+        .unwrap();
+
+    assert_eq!(
+        sink.upgrade().unwrap().events(),
+        vec![IrqEvent::Pulse(IrqLineId(18))]
+    );
+}
+
+#[test]
+fn test_single_irq_factory_rejects_unknown_or_multiple_outputs() {
+    let (fabric, _) = recording_fabric(VMInterruptMode::Emulated);
+    let context = DeviceBuildContext::new(&fabric);
+    let factories = irq_factory_registry();
+
+    let unknown = named_irq_device_config(0x7_2000, "tx", 19, InterruptTriggerMode::EdgeTriggered);
+    assert_eq!(
+        AxVmDevices::build_with_factories(
+            AxVmDeviceConfig::new(vec![unknown]),
+            &factories,
+            &context,
+        )
+        .err(),
+        Some(AxError::InvalidInput)
+    );
+
+    let mut multiple =
+        named_irq_device_config(0x7_3000, "irq", 20, InterruptTriggerMode::EdgeTriggered);
+    multiple.irqs.push(DeviceIrqConfig {
+        name: String::from("status"),
+        line: 21,
+        trigger: InterruptTriggerMode::LevelTriggered,
+    });
+    assert_eq!(
+        AxVmDevices::build_with_factories(
+            AxVmDeviceConfig::new(vec![multiple]),
+            &factories,
+            &context,
+        )
+        .err(),
+        Some(AxError::InvalidInput)
+    );
+
+    let incompatible =
+        named_irq_device_config(0x7_4000, "irq", 22, InterruptTriggerMode::LevelTriggered);
+    assert_eq!(
+        AxVmDevices::build_with_factories(
+            AxVmDeviceConfig::new(vec![incompatible]),
+            &factories,
+            &context,
+        )
+        .err(),
+        Some(AxError::InvalidInput)
     );
 }
 
