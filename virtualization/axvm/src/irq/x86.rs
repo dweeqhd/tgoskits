@@ -165,6 +165,7 @@ impl DeviceFactory for X86IoApicFactory {
         if config.base_gpa != self.base_gpa
             || config.length != self.length
             || !config.cfg_list.is_empty()
+            || !config.irqs.is_empty()
         {
             return ax_err!(
                 InvalidInput,
@@ -199,7 +200,12 @@ impl DeviceFactory for X86PitFactory {
         context: &DeviceBuildContext<'_>,
     ) -> AxResult<DeviceBundle> {
         validate_port_config(config, PIT_PORT_BASE, PIT_PORT_LENGTH, "x86 PIT")?;
-        let irq = context.resolve_irq(PIT_TIMER_GSI, InterruptTriggerMode::EdgeTriggered)?;
+        let irq = context.resolve_config_irq(
+            config,
+            "irq",
+            PIT_TIMER_GSI,
+            InterruptTriggerMode::EdgeTriggered,
+        )?;
         let pit = Arc::new(EmulatedPit::new(irq));
         Ok(DeviceBundle::new()
             .with_registration(DeviceRegistration::Port(pit.clone()))
@@ -228,7 +234,12 @@ impl DeviceFactory for X86SerialFactory {
         context: &DeviceBuildContext<'_>,
     ) -> AxResult<DeviceBundle> {
         validate_port_config(config, COM1_PORT_BASE, COM1_PORT_LENGTH, "x86 COM1")?;
-        let irq = context.resolve_irq(COM1_GSI, InterruptTriggerMode::LevelTriggered)?;
+        let irq = context.resolve_config_irq(
+            config,
+            "irq",
+            COM1_GSI,
+            InterruptTriggerMode::LevelTriggered,
+        )?;
         let serial = Arc::new(EmulatedSerialPort::new(irq));
         Ok(DeviceBundle::new()
             .with_registration(DeviceRegistration::Port(serial.clone()))
@@ -300,6 +311,15 @@ pub(crate) fn configure(
             InvalidInput,
             format_args!(
                 "x86 IO APIC device '{}' requires an empty config list",
+                config.name
+            )
+        );
+    }
+    if !config.irqs.is_empty() {
+        return ax_err!(
+            InvalidInput,
+            format_args!(
+                "x86 IO APIC device '{}' does not expose device IRQ outputs",
                 config.name
             )
         );

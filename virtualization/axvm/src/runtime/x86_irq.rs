@@ -30,7 +30,7 @@ pub fn poll_devices(vm: &VMRef) {
 
 pub fn drain_routed_irqs(vm: &crate::AxVM, vcpu: &VCpuRef) {
     if let Err(err) = vm.interrupt_fabric().drain_pending(vcpu.id(), |irq| {
-        vcpu.inject_interrupt_with_trigger(irq.vector as usize, irq.trigger)
+        vcpu.inject_interrupt_with_trigger(irq.vector, irq.trigger)
     }) {
         warn!(
             "failed to drain routed interrupts for VM[{}] VCpu[{}]: {err:?}",
