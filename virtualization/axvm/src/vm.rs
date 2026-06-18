@@ -72,6 +72,25 @@ fn sign_extend_value(value: usize, width: AccessWidth) -> usize {
     }
 }
 
+fn log_device_access_result<T>(
+    vm_id: usize,
+    vcpu_id: usize,
+    bus: &'static str,
+    addr: impl fmt::LowerHex,
+    read: bool,
+    width: AccessWidth,
+    result: AxResult<T>,
+) -> AxResult<T> {
+    if let Err(err) = &result {
+        let rw = if read { "read" } else { "write" };
+        error!(
+            "VM[{vm_id}] vCPU[{vcpu_id}] device {rw} failed: bus={bus}, addr={addr:#x}, \
+             width={width:?}, error={err:?}"
+        );
+    }
+    result
+}
+
 struct AxVMInnerConst {
     phys_cpu_ls: PhysCpuList,
     vcpu_list: Box<[AxVCpuRef]>,
@@ -667,7 +686,15 @@ impl AxVM {
                         reg_width,
                         signed_ext,
                     } => {
-                        let raw = self.get_devices().handle_mmio_read(addr, width)?;
+                        let raw = log_device_access_result(
+                            self.id(),
+                            vcpu_id,
+                            "mmio",
+                            addr,
+                            true,
+                            width,
+                            self.get_devices().handle_mmio_read(addr, width),
+                        )?;
                         let masked = raw & width_mask(width);
                         let val = if signed_ext {
                             sign_extend_value(masked, width)
@@ -677,11 +704,27 @@ impl AxVM {
                         vcpu.set_gpr(reg, val);
                     }
                     AxVCpuExitReason::MmioWrite { addr, width, data } => {
-                        self.get_devices()
-                            .handle_mmio_write(addr, width, data as usize)?;
+                        log_device_access_result(
+                            self.id(),
+                            vcpu_id,
+                            "mmio",
+                            addr,
+                            false,
+                            width,
+                            self.get_devices()
+                                .handle_mmio_write(addr, width, data as usize),
+                        )?;
                     }
                     AxVCpuExitReason::IoRead { port, width } => {
-                        let val = self.get_devices().handle_port_read(port, width)?;
+                        let val = log_device_access_result(
+                            self.id(),
+                            vcpu_id,
+                            "port",
+                            port,
+                            true,
+                            width,
+                            self.get_devices().handle_port_read(port, width),
+                        )?;
                         #[cfg(not(target_arch = "riscv64"))]
                         vcpu.set_gpr(0, val); // The target is always eax/ax/al, todo: handle access_width correctly
 
@@ -689,23 +732,47 @@ impl AxVM {
                         vcpu.set_gpr(riscv_vcpu::GprIndex::A0 as usize, val);
                     }
                     AxVCpuExitReason::IoWrite { port, width, data } => {
-                        self.get_devices()
-                            .handle_port_write(port, width, data as usize)?;
+                        log_device_access_result(
+                            self.id(),
+                            vcpu_id,
+                            "port",
+                            port,
+                            false,
+                            width,
+                            self.get_devices()
+                                .handle_port_write(port, width, data as usize),
+                        )?;
                     }
                     AxVCpuExitReason::SysRegRead { addr, reg } => {
-                        let val = self.get_devices().handle_sys_reg_read(
+                        let val = log_device_access_result(
+                            self.id(),
+                            vcpu_id,
+                            "sys_reg",
                             addr,
-                            // Generally speaking, the width of system register is fixed and needless to be specified.
-                            // AccessWidth::Qword here is just a placeholder, may be changed in the future.
+                            true,
                             AccessWidth::Qword,
+                            self.get_devices().handle_sys_reg_read(
+                                addr,
+                                // Generally speaking, the width of system register is fixed and needless to be specified.
+                                // AccessWidth::Qword here is just a placeholder, may be changed in the future.
+                                AccessWidth::Qword,
+                            ),
                         )?;
                         vcpu.set_gpr(reg, val);
                     }
                     AxVCpuExitReason::SysRegWrite { addr, value } => {
-                        self.get_devices().handle_sys_reg_write(
+                        log_device_access_result(
+                            self.id(),
+                            vcpu_id,
+                            "sys_reg",
                             addr,
+                            false,
                             AccessWidth::Qword,
-                            value as usize,
+                            self.get_devices().handle_sys_reg_write(
+                                addr,
+                                AccessWidth::Qword,
+                                value as usize,
+                            ),
                         )?;
                     }
                     AxVCpuExitReason::NestedPageFault { addr, access_flags } => {

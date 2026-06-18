@@ -280,15 +280,39 @@ fn test_mmio_dispatch_functionality() {
 }
 
 #[test]
-#[should_panic(expected = "emu_device not found")]
-fn test_mmio_panic_on_missing_device() {
+fn test_unmatched_bus_accesses_return_not_found() {
     let config = AxVmDeviceConfig::new(vec![]);
     let devices = AxVmDevices::new(config).unwrap();
 
     let invalid_addr = GuestPhysAddr::from(0x9999_9999);
+    let invalid_sysreg = SysRegAddr::new(0x9999);
+    let invalid_port = Port::new(0x9999);
     let width = AccessWidth::try_from(4).unwrap();
 
-    let _ = devices.handle_mmio_read(invalid_addr, width);
+    assert_eq!(
+        devices.handle_mmio_read(invalid_addr, width),
+        Err(AxError::NotFound)
+    );
+    assert_eq!(
+        devices.handle_mmio_write(invalid_addr, width, 0x1234),
+        Err(AxError::NotFound)
+    );
+    assert_eq!(
+        devices.handle_sys_reg_read(invalid_sysreg, width),
+        Err(AxError::NotFound)
+    );
+    assert_eq!(
+        devices.handle_sys_reg_write(invalid_sysreg, width, 0x1234),
+        Err(AxError::NotFound)
+    );
+    assert_eq!(
+        devices.handle_port_read(invalid_port, width),
+        Err(AxError::NotFound)
+    );
+    assert_eq!(
+        devices.handle_port_write(invalid_port, width, 0x1234),
+        Err(AxError::NotFound)
+    );
 }
 
 #[test]

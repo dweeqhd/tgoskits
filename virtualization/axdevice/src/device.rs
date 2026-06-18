@@ -196,17 +196,20 @@ fn log_device_io(
 }
 
 #[inline]
-fn panic_device_not_found(
+fn device_not_found<T>(
     addr_type: &'static str,
     addr: impl core::fmt::LowerHex,
     read: bool,
     width: AccessWidth,
-) -> ! {
+) -> AxResult<T> {
     let rw = if read { "read" } else { "write" };
-    error!(
-        "emu_device {rw} failed: device not found for {addr_type} {addr:#x} with width {width:?}"
-    );
-    panic!("emu_device not found");
+    ax_err!(
+        NotFound,
+        format_args!(
+            "emu_device {rw} failed: device not found for {addr_type} {addr:#x} with width \
+             {width:?}"
+        )
+    )
 }
 
 /// The implemention for AxVmDevices
@@ -506,7 +509,7 @@ impl AxVmDevices {
 
             return emu_dev.handle_read(addr, width);
         }
-        panic_device_not_found("mmio", addr, true, width);
+        device_not_found("mmio", addr, true, width)
     }
 
     /// Handle the MMIO write by GuestPhysAddr, data width and the value need to write, call specific device to write the value
@@ -521,7 +524,7 @@ impl AxVmDevices {
 
             return emu_dev.handle_write(addr, width, val);
         }
-        panic_device_not_found("mmio", addr, false, width);
+        device_not_found("mmio", addr, false, width)
     }
 
     /// Handle the system register read by SysRegAddr and data width, return the value of the guest want to read
@@ -531,7 +534,7 @@ impl AxVmDevices {
 
             return emu_dev.handle_read(addr, width);
         }
-        panic_device_not_found("sys_reg", addr, true, width);
+        device_not_found("sys_reg", addr, true, width)
     }
 
     /// Handle the system register write by SysRegAddr, data width and the value need to write, call specific device to write the value
@@ -546,7 +549,7 @@ impl AxVmDevices {
 
             return emu_dev.handle_write(addr, width, val);
         }
-        panic_device_not_found("sys_reg", addr, false, width);
+        device_not_found("sys_reg", addr, false, width)
     }
 
     /// Handle the port read by port number and data width, return the value of the guest want to read
@@ -556,7 +559,7 @@ impl AxVmDevices {
 
             return emu_dev.handle_read(port, width);
         }
-        panic_device_not_found("port", port, true, width);
+        device_not_found("port", port, true, width)
     }
 
     /// Handle the port write by port number, data width and the value need to write, call specific device to write the value
@@ -566,6 +569,6 @@ impl AxVmDevices {
 
             return emu_dev.handle_write(port, width, val);
         }
-        panic_device_not_found("port", port, false, width);
+        device_not_found("port", port, false, width)
     }
 }
