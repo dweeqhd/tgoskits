@@ -730,7 +730,7 @@ fn test_builtin_meta_factory_builds_dummy_config() {
 }
 
 #[test]
-fn test_build_with_factories_preserves_legacy_ivc_config() {
+fn test_builtin_ivc_factory_initializes_channel_allocator() {
     let mut factories = DeviceFactoryRegistry::new();
     register_builtin_factories(&mut factories).unwrap();
     let resolver = RejectingIrqResolver;
@@ -750,6 +750,26 @@ fn test_build_with_factories_preserves_legacy_ivc_config() {
     assert_eq!(devices.iter_mmio_dev().count(), 0);
     assert_eq!(devices.iter_port_dev().count(), 0);
     assert_eq!(devices.iter_sys_reg_dev().count(), 0);
+}
+
+#[test]
+fn test_duplicate_ivc_channel_config_is_rejected_atomically() {
+    let mut factories = DeviceFactoryRegistry::new();
+    register_builtin_factories(&mut factories).unwrap();
+    let resolver = RejectingIrqResolver;
+    let context = DeviceBuildContext::new(&resolver);
+    let first = device_config("ivc-a", EmulatedDeviceType::IVCChannel, 0x4_0000, 0x1000);
+    let second = device_config("ivc-b", EmulatedDeviceType::IVCChannel, 0x5_0000, 0x1000);
+
+    assert_eq!(
+        AxVmDevices::build_with_factories(
+            AxVmDeviceConfig::new(vec![first, second]),
+            &factories,
+            &context,
+        )
+        .err(),
+        Some(AxError::AlreadyExists)
+    );
 }
 
 // Mock implementation for x86_vlapic host callbacks when running

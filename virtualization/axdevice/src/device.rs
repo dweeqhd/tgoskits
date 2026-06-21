@@ -15,8 +15,6 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::ops::Range;
 
-#[cfg(target_arch = "aarch64")]
-use arm_vgic::Vgic;
 use ax_errno::{AxResult, ax_err};
 use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::is_aligned_4k;
@@ -24,9 +22,7 @@ use axdevice_base::{
     AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps,
     DeviceAddrRange, Port, PortRange, SysRegAddr, SysRegAddrRange,
 };
-use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange};
-#[cfg(target_arch = "riscv64")]
-use riscv_vplic::VPlicGlobal;
+use axvm_types::{EmulatedDeviceConfig, GuestPhysAddr, GuestPhysAddrRange};
 
 use crate::{
     AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, DeviceRegistration,
@@ -224,15 +220,21 @@ impl AxVmDevices {
         }
     }
 
-    /// According AxVmDeviceConfig to init the AxVmDevices
+    /// Creates an empty device registry.
+    ///
+    /// Configured devices are built through [`Self::build_with_factories`] so
+    /// architecture-specific construction remains outside `axdevice`.
     pub fn new(config: AxVmDeviceConfig) -> AxResult<Self> {
-        let mut this = Self::empty();
-
-        Self::init(&mut this, &config.emu_configs)?;
-        Ok(this)
+        if !config.emu_configs.is_empty() {
+            return ax_err!(
+                Unsupported,
+                "AxVmDevices::new no longer builds configured devices; use build_with_factories"
+            );
+        }
+        Ok(Self::empty())
     }
 
-    /// Builds devices with registered factories and explicit legacy fallbacks.
+    /// Builds devices with registered factories.
     pub fn build_with_factories(
         config: AxVmDeviceConfig,
         factories: &DeviceFactoryRegistry,
@@ -240,19 +242,7 @@ impl AxVmDevices {
     ) -> AxResult<Self> {
         let mut this = Self::empty();
         for config in &config.emu_configs {
-            if factories.get(config.emu_type).is_some() {
-                this.register_factory_device(config, factories, context)?;
-            } else if Self::is_legacy_fallback(config.emu_type) {
-                Self::init(&mut this, core::slice::from_ref(config))?;
-            } else {
-                return ax_err!(
-                    Unsupported,
-                    format_args!(
-                        "no factory is registered for emulated device '{}' of type {}",
-                        config.name, config.emu_type
-                    )
-                );
-            }
+            this.register_factory_device(config, factories, context)?;
         }
         Ok(this)
     }
@@ -266,95 +256,6 @@ impl AxVmDevices {
     ) -> AxResult {
         let bundle = factories.build(config, context)?;
         self.register_bundle(bundle)
-    }
-
-    fn is_legacy_fallback(device_type: EmulatedDeviceType) -> bool {
-        matches!(
-            device_type,
-            EmulatedDeviceType::InterruptController
-                | EmulatedDeviceType::Console
-                | EmulatedDeviceType::IVCChannel
-                | EmulatedDeviceType::PPPTGlobal
-        )
-    }
-
-    /// According the emu_configs to init every  specific device
-    fn init(this: &mut Self, emu_configs: &[EmulatedDeviceConfig]) -> AxResult {
-        for config in emu_configs {
-            match config.emu_type {
-                EmulatedDeviceType::InterruptController => {
-                    #[cfg(target_arch = "aarch64")]
-                    {
-                        this.add_mmio_dev(Arc::new(Vgic::new()))?;
-                    }
-                    #[cfg(not(target_arch = "aarch64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::PPPTGlobal => {
-                    #[cfg(target_arch = "riscv64")]
-                    {
-                        let context_num = config
-                            .cfg_list
-                            .first()
-                            .copied()
-                            .expect("expect 1 arg for pppt global (context_num)");
-                        this.add_mmio_dev(Arc::new(VPlicGlobal::new(
-                            config.base_gpa.into(),
-                            Some(config.length),
-                            context_num, // Here only 1 core and should be cpu0
-                        )))?;
-                        // PLIC Partial Passthrough Global.
-                        info!(
-                            "Partial PLIC Passthrough Global initialized with base GPA {:#x} and \
-                             length {:#x}",
-                            config.base_gpa, config.length
-                        );
-                    }
-                    #[cfg(not(target_arch = "riscv64"))]
-                    {
-                        warn!(
-                            "emu type: {} is not supported on this platform",
-                            config.emu_type
-                        );
-                    }
-                }
-                EmulatedDeviceType::Console => {
-                    warn!(
-                        "emu type: {} requires a registered platform factory",
-                        config.emu_type
-                    );
-                }
-                EmulatedDeviceType::IVCChannel => {
-                    if this.ivc_channel.is_none() {
-                        // Initialize the IVC channel range allocator
-                        this.ivc_channel = Some(Mutex::new(RangeAllocator::new(Range {
-                            start: config.base_gpa,
-                            end: config.base_gpa + config.length,
-                        })));
-                        info!(
-                            "IVCChannel initialized with base GPA {base_gpa:#x} and length \
-                             {length:#x}",
-                            base_gpa = config.base_gpa,
-                            length = config.length
-                        );
-                    } else {
-                        warn!("IVCChannel already initialized, ignoring additional config");
-                    }
-                }
-                _ => {
-                    warn!(
-                        "Emulated device {}'s type {:?} is not supported yet",
-                        config.name, config.emu_type
-                    );
-                }
-            }
-        }
-        Ok(())
     }
 
     /// Allocates an IVC (Inter-VM Communication) channel of the specified size.
@@ -410,6 +311,7 @@ impl AxVmDevices {
         self.emu_mmio_devices.validate_devices(&bundle.mmio)?;
         self.emu_port_devices.validate_devices(&bundle.port)?;
         self.emu_sys_reg_devices.validate_devices(&bundle.sysreg)?;
+        self.validate_ivc_channels(&bundle.ivc_channels)?;
 
         for (index, pollable) in bundle.pollable.iter().enumerate() {
             if self
@@ -429,6 +331,37 @@ impl AxVmDevices {
         self.emu_port_devices.commit_devices(bundle.port);
         self.emu_sys_reg_devices.commit_devices(bundle.sysreg);
         self.pollable_devices.extend(bundle.pollable);
+        for range in bundle.ivc_channels {
+            info!(
+                "IVCChannel initialized with base GPA {base_gpa:#x} and length {length:#x}",
+                base_gpa = range.start,
+                length = range.end - range.start
+            );
+            self.ivc_channel = Some(Mutex::new(RangeAllocator::new(range)));
+        }
+        Ok(())
+    }
+
+    fn validate_ivc_channels(&self, channels: &[Range<usize>]) -> AxResult {
+        if channels.is_empty() {
+            return Ok(());
+        }
+        if self.ivc_channel.is_some() || channels.len() > 1 {
+            return ax_err!(
+                AlreadyExists,
+                "failed to register IVCChannel: channel allocator is already registered"
+            );
+        }
+        let range = &channels[0];
+        if range.start >= range.end {
+            return ax_err!(
+                InvalidInput,
+                format_args!(
+                    "failed to register IVCChannel range {:#x}..{:#x}: range is empty or invalid",
+                    range.start, range.end
+                )
+            );
+        }
         Ok(())
     }
 
@@ -467,44 +400,9 @@ impl AxVmDevices {
         self.pollable_devices.iter()
     }
 
-    /// Iterates over the MMIO devices in the set.
-    pub fn iter_mut_mmio_dev(&mut self) -> impl Iterator<Item = &mut Arc<dyn BaseMmioDeviceOps>> {
-        self.emu_mmio_devices.iter_mut()
-    }
-
-    /// Iterates over the system register devices in the set.
-    pub fn iter_mut_sys_reg_dev(
-        &mut self,
-    ) -> impl Iterator<Item = &mut Arc<dyn BaseSysRegDeviceOps>> {
-        self.emu_sys_reg_devices.iter_mut()
-    }
-
-    /// Iterates over the port devices in the set.
-    pub fn iter_mut_port_dev(&mut self) -> impl Iterator<Item = &mut Arc<dyn BasePortDeviceOps>> {
-        self.emu_port_devices.iter_mut()
-    }
-
-    /// Find specific MMIO device by ipa
-    pub fn find_mmio_dev(&self, ipa: GuestPhysAddr) -> Option<Arc<dyn BaseMmioDeviceOps>> {
-        self.emu_mmio_devices.find_dev(ipa)
-    }
-
-    /// Find specific system register device by ipa
-    pub fn find_sys_reg_dev(
-        &self,
-        sys_reg_addr: SysRegAddr,
-    ) -> Option<Arc<dyn BaseSysRegDeviceOps>> {
-        self.emu_sys_reg_devices.find_dev(sys_reg_addr)
-    }
-
-    /// Find specific port device by port number
-    pub fn find_port_dev(&self, port: Port) -> Option<Arc<dyn BasePortDeviceOps>> {
-        self.emu_port_devices.find_dev(port)
-    }
-
     /// Handle the MMIO read by GuestPhysAddr and data width, return the value of the guest want to read
     pub fn handle_mmio_read(&self, addr: GuestPhysAddr, width: AccessWidth) -> AxResult<usize> {
-        if let Some(emu_dev) = self.find_mmio_dev(addr) {
+        if let Some(emu_dev) = self.emu_mmio_devices.find_dev(addr) {
             log_device_io("mmio", addr, emu_dev.address_range(), true, width);
 
             return emu_dev.handle_read(addr, width);
@@ -519,7 +417,7 @@ impl AxVmDevices {
         width: AccessWidth,
         val: usize,
     ) -> AxResult {
-        if let Some(emu_dev) = self.find_mmio_dev(addr) {
+        if let Some(emu_dev) = self.emu_mmio_devices.find_dev(addr) {
             log_device_io("mmio", addr, emu_dev.address_range(), false, width);
 
             return emu_dev.handle_write(addr, width, val);
@@ -529,7 +427,7 @@ impl AxVmDevices {
 
     /// Handle the system register read by SysRegAddr and data width, return the value of the guest want to read
     pub fn handle_sys_reg_read(&self, addr: SysRegAddr, width: AccessWidth) -> AxResult<usize> {
-        if let Some(emu_dev) = self.find_sys_reg_dev(addr) {
+        if let Some(emu_dev) = self.emu_sys_reg_devices.find_dev(addr) {
             log_device_io("sys_reg", addr.0, emu_dev.address_range(), true, width);
 
             return emu_dev.handle_read(addr, width);
@@ -544,7 +442,7 @@ impl AxVmDevices {
         width: AccessWidth,
         val: usize,
     ) -> AxResult {
-        if let Some(emu_dev) = self.find_sys_reg_dev(addr) {
+        if let Some(emu_dev) = self.emu_sys_reg_devices.find_dev(addr) {
             log_device_io("sys_reg", addr.0, emu_dev.address_range(), false, width);
 
             return emu_dev.handle_write(addr, width, val);
@@ -554,7 +452,7 @@ impl AxVmDevices {
 
     /// Handle the port read by port number and data width, return the value of the guest want to read
     pub fn handle_port_read(&self, port: Port, width: AccessWidth) -> AxResult<usize> {
-        if let Some(emu_dev) = self.find_port_dev(port) {
+        if let Some(emu_dev) = self.emu_port_devices.find_dev(port) {
             log_device_io("port", port.0, emu_dev.address_range(), true, width);
 
             return emu_dev.handle_read(port, width);
@@ -564,7 +462,7 @@ impl AxVmDevices {
 
     /// Handle the port write by port number, data width and the value need to write, call specific device to write the value
     pub fn handle_port_write(&self, port: Port, width: AccessWidth, val: usize) -> AxResult {
-        if let Some(emu_dev) = self.find_port_dev(port) {
+        if let Some(emu_dev) = self.emu_port_devices.find_dev(port) {
             log_device_io("port", port.0, emu_dev.address_range(), false, width);
 
             return emu_dev.handle_write(port, width, val);

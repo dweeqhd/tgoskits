@@ -1358,7 +1358,6 @@ dependencies = [
 name = "axdevice"
 version = "0.4.12"
 dependencies = [
- "arm_vgic",
  "ax-errno 0.6.0",
  "ax-kspin",
  "ax-memory-addr",
@@ -1366,7 +1365,6 @@ dependencies = [
  "axvm-types",
  "cfg-if",
  "log",
- "riscv_vplic",
 ]
 
 [[package]]
@@ -1376,7 +1374,6 @@ dependencies = [
  "ax-errno 0.6.0",
  "ax-memory-addr",
  "axvm-types",
- "serde",
 ]
 
 [[package]]

@@ -20,7 +20,7 @@ use ax_errno::{AxResult, ax_err};
 use axdevice_base::{InterruptTriggerMode, IrqLine};
 use axvm_types::{EmulatedDeviceConfig, EmulatedDeviceType};
 
-use crate::DeviceBundle;
+use crate::{DeviceBundle, DeviceRegistration};
 
 /// Resolves a VM-local interrupt line for a device under construction.
 pub trait IrqResolver: Send + Sync {
@@ -188,7 +188,58 @@ impl DeviceFactory for MetaDeviceFactory {
     }
 }
 
+struct IvcChannelFactory;
+
+impl DeviceFactory for IvcChannelFactory {
+    fn device_type(&self) -> EmulatedDeviceType {
+        EmulatedDeviceType::IVCChannel
+    }
+
+    fn build(
+        &self,
+        config: &EmulatedDeviceConfig,
+        _context: &DeviceBuildContext<'_>,
+    ) -> AxResult<DeviceBundle> {
+        let Some(end) = config.base_gpa.checked_add(config.length) else {
+            return ax_err!(
+                InvalidInput,
+                format_args!(
+                    "IVCChannel '{}' range overflows: base GPA {:#x}, length {:#x}",
+                    config.name, config.base_gpa, config.length
+                )
+            );
+        };
+        if config.length == 0 {
+            return ax_err!(
+                InvalidInput,
+                format_args!("IVCChannel '{}' range length must be non-zero", config.name)
+            );
+        }
+        if !config.irqs.is_empty() || config.irq_id != 0 {
+            return ax_err!(
+                InvalidInput,
+                format_args!(
+                    "IVCChannel '{}' does not support IRQ configuration",
+                    config.name
+                )
+            );
+        }
+        if !config.cfg_list.is_empty() {
+            return ax_err!(
+                InvalidInput,
+                format_args!(
+                    "IVCChannel '{}' does not support cfg_list parameters",
+                    config.name
+                )
+            );
+        }
+
+        Ok(DeviceRegistration::IvcChannel(config.base_gpa..end).into())
+    }
+}
+
 /// Registers device factories that do not depend on an architecture backend.
 pub fn register_builtin_factories(registry: &mut DeviceFactoryRegistry) -> AxResult {
-    registry.register(Arc::new(MetaDeviceFactory))
+    registry.register(Arc::new(MetaDeviceFactory))?;
+    registry.register(Arc::new(IvcChannelFactory))
 }

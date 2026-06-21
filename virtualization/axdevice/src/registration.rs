@@ -15,6 +15,7 @@
 //! Transactional device registration types.
 
 use alloc::{sync::Arc, vec::Vec};
+use core::ops::Range;
 
 use ax_errno::AxResult;
 use axdevice_base::{BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps};
@@ -36,6 +37,8 @@ pub enum DeviceRegistration {
     SysReg(Arc<dyn BaseSysRegDeviceOps>),
     /// A capability that requires periodic polling.
     Pollable(Arc<dyn PollableDeviceOps>),
+    /// An IVC channel guest physical address range.
+    IvcChannel(Range<usize>),
 }
 
 /// A set of device capabilities that must be registered atomically.
@@ -48,6 +51,7 @@ pub struct DeviceBundle {
     pub(crate) port: Vec<Arc<dyn BasePortDeviceOps>>,
     pub(crate) sysreg: Vec<Arc<dyn BaseSysRegDeviceOps>>,
     pub(crate) pollable: Vec<Arc<dyn PollableDeviceOps>>,
+    pub(crate) ivc_channels: Vec<Range<usize>>,
 }
 
 impl DeviceBundle {
@@ -58,6 +62,7 @@ impl DeviceBundle {
             port: Vec::new(),
             sysreg: Vec::new(),
             pollable: Vec::new(),
+            ivc_channels: Vec::new(),
         }
     }
 
@@ -75,6 +80,7 @@ impl DeviceBundle {
             DeviceRegistration::Port(device) => self.port.push(device),
             DeviceRegistration::SysReg(device) => self.sysreg.push(device),
             DeviceRegistration::Pollable(device) => self.pollable.push(device),
+            DeviceRegistration::IvcChannel(range) => self.ivc_channels.push(range),
         }
     }
 
@@ -90,6 +96,7 @@ impl DeviceBundle {
             && self.port.is_empty()
             && self.sysreg.is_empty()
             && self.pollable.is_empty()
+            && self.ivc_channels.is_empty()
     }
 }
 
