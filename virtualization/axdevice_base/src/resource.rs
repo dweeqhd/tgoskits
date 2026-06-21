@@ -230,6 +230,18 @@ pub struct DeviceCapabilities {
     pub msix: bool,
 }
 
+impl DeviceCapabilities {
+    /// Empty capability set.
+    pub const NONE: Self = Self {
+        reset: false,
+        suspend: false,
+        resume: false,
+        dma: false,
+        msi: false,
+        msix: false,
+    };
+}
+
 /// A declarative description supplied by one device.
 pub trait DeviceDescriptor {
     /// Returns the assigned device identifier.

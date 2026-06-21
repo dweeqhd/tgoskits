@@ -94,6 +94,20 @@ impl DeviceRegistry {
         Ok(id)
     }
 
+    /// Allocates and registers a descriptor from raw resource data.
+    pub fn register_device(
+        &mut self,
+        name: &'static str,
+        resources: ResourceSet,
+        capabilities: DeviceCapabilities,
+    ) -> AxResult<DeviceId> {
+        self.validate_resources(resources.as_slice())?;
+        let id = self.allocate_id();
+        self.devices
+            .push(RegisteredDevice::new(id, name, resources, capabilities));
+        Ok(id)
+    }
+
     /// Returns all registered device descriptors.
     pub fn devices(&self) -> &[RegisteredDevice] {
         &self.devices

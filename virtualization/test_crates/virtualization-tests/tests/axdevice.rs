@@ -22,9 +22,9 @@ use axdevice::{
     RegisteredDevice, register_builtin_factories,
 };
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, BusAccess, BusAddress, BusResponse, DeviceCapabilities, DeviceId,
-    InterruptTriggerMode, IrqLine, IrqLineId, IrqTarget, Port, PortRange, Resource, ResourceSet,
-    SysRegAddr, SysRegAddrRange, dma_resource, pci_bar_resource,
+    AccessWidth, BaseDeviceOps, BusAccess, BusAddress, BusResponse, DeviceCapabilities,
+    DeviceDescriptor, DeviceId, InterruptTriggerMode, IrqLine, IrqLineId, IrqTarget, Port,
+    PortRange, Resource, ResourceSet, SysRegAddr, SysRegAddrRange, dma_resource, pci_bar_resource,
 };
 use axvm_types::{
     EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, InterruptVector,
@@ -604,6 +604,67 @@ fn test_bundle_existing_conflict_leaves_all_registries_unchanged() {
             devices.iter_mmio_dev().count(),
             devices.iter_port_dev().count(),
             devices.iter_sys_reg_dev().count(),
+        ),
+        counts_before
+    );
+}
+
+#[test]
+fn test_bundle_resources_are_registered_with_capabilities() {
+    let mut devices = empty_devices();
+    let mut bundle = DeviceBundle::new();
+    bundle.push(DeviceRegistration::Mmio(mmio_device(
+        "resource-mmio",
+        0x7100,
+        0x7200,
+    )));
+    bundle.push(DeviceRegistration::Resource(Resource::Msi { vectors: 2 }));
+    bundle.push(DeviceRegistration::Capabilities(DeviceCapabilities {
+        msi: true,
+        ..DeviceCapabilities::default()
+    }));
+
+    assert_eq!(devices.register_bundle(bundle), Ok(()));
+    let registered = devices.registry().devices();
+    assert_eq!(registered.len(), 1);
+    assert_eq!(registered[0].capabilities().msi, true);
+    assert!(
+        registered[0]
+            .resources()
+            .as_slice()
+            .iter()
+            .any(|resource| matches!(resource, Resource::Msi { vectors: 2 }))
+    );
+    assert!(registered[0].resources().as_slice().iter().any(
+        |resource| matches!(resource, Resource::Mmio(range) if range.start.as_usize() == 0x7100)
+    ));
+}
+
+#[test]
+fn test_explicit_resource_conflict_rejects_entire_bundle() {
+    let mut devices = empty_devices();
+    devices
+        .add_mmio_dev(mmio_device("existing-mmio", 0x9000, 0xa000))
+        .unwrap();
+    let counts_before = (
+        devices.registry().devices().len(),
+        devices.iter_mmio_dev().count(),
+        devices.iter_port_dev().count(),
+    );
+    let mut bundle = DeviceBundle::new();
+    bundle.push(DeviceRegistration::Resource(Resource::Mmio(
+        GuestPhysAddrRange::new(0x9800.into(), 0xa800.into()),
+    )));
+    bundle.push(DeviceRegistration::Port(Arc::new(MockPortDevice::new(
+        0x600, 0x60f,
+    ))));
+
+    assert_eq!(devices.register_bundle(bundle), Err(AxError::AddrInUse));
+    assert_eq!(
+        (
+            devices.registry().devices().len(),
+            devices.iter_mmio_dev().count(),
+            devices.iter_port_dev().count(),
         ),
         counts_before
     );

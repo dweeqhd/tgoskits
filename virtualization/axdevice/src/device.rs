@@ -21,13 +21,13 @@ use ax_memory_addr::is_aligned_4k;
 use axdevice_base::{
     AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps,
     BusAccess, BusAddress, BusOperation, BusResponse, DeviceAddrRange, DeviceLifecycle, Port,
-    PortRange, SysRegAddr, SysRegAddrRange,
+    PortRange, Resource, ResourceSet, SysRegAddr, SysRegAddrRange,
 };
 use axvm_types::{EmulatedDeviceConfig, GuestPhysAddr, GuestPhysAddrRange};
 
 use crate::{
     AxVmDeviceConfig, DeviceBuildContext, DeviceBundle, DeviceFactoryRegistry, DeviceRegistration,
-    PollableDeviceOps, range_alloc::RangeAllocator,
+    DeviceRegistry, PollableDeviceOps, range_alloc::RangeAllocator,
 };
 
 /// A set of emulated device types that can be accessed by a specific address range type.
@@ -171,6 +171,7 @@ type AxEmuPortDevices = AxEmuDevices<PortRange>;
 
 /// represent A vm own devices
 pub struct AxVmDevices {
+    registry: DeviceRegistry,
     /// emu devices
     emu_mmio_devices: AxEmuMmioDevices,
     emu_sys_reg_devices: AxEmuSysRegDevices,
@@ -214,6 +215,7 @@ fn device_not_found<T>(
 impl AxVmDevices {
     fn empty() -> Self {
         Self {
+            registry: DeviceRegistry::new(),
             emu_mmio_devices: AxEmuMmioDevices::new(),
             emu_sys_reg_devices: AxEmuSysRegDevices::new(),
             emu_port_devices: AxEmuPortDevices::new(),
@@ -315,6 +317,13 @@ impl AxVmDevices {
         self.emu_port_devices.validate_devices(&bundle.port)?;
         self.emu_sys_reg_devices.validate_devices(&bundle.sysreg)?;
         self.validate_ivc_channels(&bundle.ivc_channels)?;
+        let resources = Self::bundle_resources(&bundle);
+        let mut capabilities = bundle.capabilities;
+        if !bundle.lifecycle.is_empty() {
+            capabilities.reset = true;
+            capabilities.suspend = true;
+            capabilities.resume = true;
+        }
 
         for (index, pollable) in bundle.pollable.iter().enumerate() {
             if self
@@ -345,6 +354,8 @@ impl AxVmDevices {
             }
         }
 
+        self.registry
+            .register_device("device-bundle", resources, capabilities)?;
         self.emu_mmio_devices.commit_devices(bundle.mmio);
         self.emu_port_devices.commit_devices(bundle.port);
         self.emu_sys_reg_devices.commit_devices(bundle.sysreg);
@@ -359,6 +370,20 @@ impl AxVmDevices {
             self.ivc_channel = Some(Mutex::new(RangeAllocator::new(range)));
         }
         Ok(())
+    }
+
+    fn bundle_resources(bundle: &DeviceBundle) -> ResourceSet {
+        let mut resources = ResourceSet::from_vec(bundle.resources.clone());
+        for device in &bundle.mmio {
+            resources.push(Resource::Mmio(device.address_range()));
+        }
+        for device in &bundle.port {
+            resources.push(Resource::Port(device.address_range()));
+        }
+        for device in &bundle.sysreg {
+            resources.push(Resource::SysReg(device.address_range()));
+        }
+        resources
     }
 
     fn validate_ivc_channels(&self, channels: &[Range<usize>]) -> AxResult {
@@ -412,6 +437,11 @@ impl AxVmDevices {
     /// Iterates over the port devices in the set.
     pub fn iter_port_dev(&self) -> impl Iterator<Item = &Arc<dyn BasePortDeviceOps>> {
         self.emu_port_devices.iter()
+    }
+
+    /// Returns the declarative device resource registry.
+    pub const fn registry(&self) -> &DeviceRegistry {
+        &self.registry
     }
 
     /// Iterates over devices that require periodic polling.
