@@ -116,7 +116,7 @@ impl InterruptControllerOps for X86InterruptBackend {
         self.pending.lock().push_back(QueuedInterrupt {
             vcpu_id: route.target_vcpu,
             interrupt: PendingInterrupt {
-                vector: route.vector,
+                vector: route.vector as usize,
                 trigger: InterruptTriggerMode::EdgeTriggered,
             },
         });
