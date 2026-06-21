@@ -17,7 +17,7 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use ax_errno::{AxResult, ax_err};
-use ax_kspin::SpinNoIrq as Mutex;
+use ax_kspin::SpinNoPreempt as Mutex;
 use axdevice::IrqResolver;
 use axdevice_base::{InterruptTriggerMode, IrqLine, IrqLineId, IrqSink, MsiMessage};
 use axvm_types::{InterruptVector, VCpuId, VMInterruptMode};
