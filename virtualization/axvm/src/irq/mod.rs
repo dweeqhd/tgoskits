@@ -21,6 +21,8 @@ use axdevice::IrqResolver;
 use axdevice_base::{InterruptTriggerMode, IrqLine, IrqLineId, IrqSink};
 use axvm_types::{InterruptVector, VCpuId, VMInterruptMode};
 
+pub use router::{InterruptRouter, IrqSource, MsiRoute};
+
 #[cfg(any(target_arch = "aarch64", test))]
 pub(crate) mod aarch64;
 #[cfg(any(target_arch = "loongarch64", test))]
@@ -29,6 +31,7 @@ pub(crate) mod loongarch;
 pub(crate) mod riscv;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod x86;
+mod router;
 
 /// An interrupt routed by a VM interrupt controller and ready for vCPU delivery.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
