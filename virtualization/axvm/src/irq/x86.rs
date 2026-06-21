@@ -22,7 +22,7 @@ use axdevice::{
     DeviceBuildContext, DeviceBundle, DeviceFactory, DeviceFactoryRegistry, DeviceRegistration,
     PollableDeviceOps,
 };
-use axdevice_base::{InterruptTriggerMode, IrqLineId, IrqSink};
+use axdevice_base::{InterruptTriggerMode, IrqLine, IrqLineId, IrqSink, IrqTarget, Resource};
 use axvm_types::{
     EmulatedDeviceConfig, EmulatedDeviceType, InterruptVector, VCpuId, VMInterruptMode,
 };
@@ -220,6 +220,7 @@ impl DeviceFactory for X86PitFactory {
         let pit = Arc::new(EmulatedPit::new(irq));
         Ok(DeviceBundle::new()
             .with_registration(DeviceRegistration::Port(pit.clone()))
+            .with_registration(irq_resource(pit.irq_line()))
             .with_registration(DeviceRegistration::Pollable(Arc::new(X86PitPoller(pit)))))
     }
 }
@@ -254,10 +255,19 @@ impl DeviceFactory for X86SerialFactory {
         let serial = Arc::new(EmulatedSerialPort::new(irq));
         Ok(DeviceBundle::new()
             .with_registration(DeviceRegistration::Port(serial.clone()))
+            .with_registration(irq_resource(serial.irq_line()))
             .with_registration(DeviceRegistration::Pollable(Arc::new(X86SerialPoller(
                 serial,
             )))))
     }
+}
+
+fn irq_resource(line: IrqLine) -> DeviceRegistration {
+    DeviceRegistration::Resource(Resource::Irq {
+        line: line.id(),
+        trigger: line.trigger(),
+        target: IrqTarget::Bootstrap,
+    })
 }
 
 fn validate_port_config(

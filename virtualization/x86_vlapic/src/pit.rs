@@ -268,6 +268,11 @@ impl EmulatedPit {
         }
     }
 
+    /// Returns the interrupt line driven by PIT channel 0.
+    pub fn irq_line(&self) -> IrqLine {
+        self.irq.clone()
+    }
+
     /// Poll channel 0 and pulse IRQ0 when its next deadline is reached.
     ///
     /// When a deadline is reached, this advances the deadline by whole periods so the timer

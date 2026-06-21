@@ -134,6 +134,11 @@ impl EmulatedSerialPort {
         }
     }
 
+    /// Returns the interrupt line driven by this UART.
+    pub fn irq_line(&self) -> IrqLine {
+        self.irq.clone()
+    }
+
     fn poll_host_input(state: &mut SerialState) {
         let mut buf = [0u8; 32];
         let read = host::read_bytes(&mut buf);

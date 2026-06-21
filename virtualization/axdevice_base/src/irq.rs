@@ -70,6 +70,16 @@ impl IrqLine {
         Self(Arc::new(IrqLineInner { id, trigger, sink }))
     }
 
+    /// Returns the VM-local interrupt line identifier.
+    pub fn id(&self) -> IrqLineId {
+        self.0.id
+    }
+
+    /// Returns the trigger mode required by this line.
+    pub fn trigger(&self) -> InterruptTriggerMode {
+        self.0.trigger
+    }
+
     /// Asserts a level-triggered interrupt line.
     ///
     /// Returns [`AxError::InvalidInput`] for an edge-triggered line.
