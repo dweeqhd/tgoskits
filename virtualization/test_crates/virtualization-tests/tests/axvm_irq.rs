@@ -24,12 +24,12 @@ use axdevice::{
     DeviceFactoryRegistry, DeviceRegistration, IrqResolver,
 };
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, InterruptTriggerMode, IrqLine, IrqLineId, IrqSink, Port,
+    AccessWidth, BaseDeviceOps, InterruptTriggerMode, IrqLine, IrqLineId, IrqSink, MsiMessage, Port,
 };
-use axvm::InterruptFabric;
+use axvm::{InterruptControllerOps, InterruptFabric, InterruptRouter, MsiRoute, PendingInterrupt};
 use axvm_types::{
     DeviceIrqConfig, EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange,
-    VMInterruptMode,
+    InterruptVector, VCpuId, VMInterruptMode,
 };
 use x86_vlapic::{EmulatedIoApic, EmulatedPit, EmulatedSerialPort, IoApicInterrupt};
 
@@ -134,6 +134,46 @@ impl IrqSink for RecordingIrqSink {
 
     fn pulse(&self, line: IrqLineId) -> AxResult {
         self.events.lock().unwrap().push(IrqEvent::Pulse(line));
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct RecordingInterruptController {
+    msi: Mutex<Vec<MsiRoute>>,
+    eoi: Mutex<Vec<(VCpuId, InterruptVector)>>,
+}
+
+impl IrqSink for RecordingInterruptController {
+    fn set_level(&self, _line: IrqLineId, _asserted: bool) -> AxResult {
+        Ok(())
+    }
+
+    fn pulse(&self, _line: IrqLineId) -> AxResult {
+        Ok(())
+    }
+}
+
+impl InterruptControllerOps for RecordingInterruptController {
+    fn inject_msi(&self, route: MsiRoute) -> AxResult {
+        self.msi.lock().unwrap().push(route);
+        Ok(())
+    }
+
+    fn eoi(&self, vcpu_id: VCpuId, vector: InterruptVector) -> AxResult {
+        self.eoi.lock().unwrap().push((vcpu_id, vector));
+        Ok(())
+    }
+
+    fn forward_host_irq(&self, _host_irq: usize) -> AxResult {
+        Ok(())
+    }
+
+    fn drain_pending(
+        &self,
+        _vcpu_id: VCpuId,
+        _deliver: &mut dyn FnMut(PendingInterrupt) -> AxResult,
+    ) -> AxResult {
         Ok(())
     }
 }
@@ -294,6 +334,33 @@ fn test_interrupt_fabric_can_signal_backend_directly() {
             IrqEvent::Pulse(IrqLineId(22)),
         ]
     );
+}
+
+#[test]
+fn test_interrupt_fabric_routes_msi_by_message() {
+    let controller = Arc::new(RecordingInterruptController::default());
+    let sink: Arc<dyn IrqSink> = controller.clone();
+    let ops: Arc<dyn InterruptControllerOps> = controller.clone();
+    let fabric = InterruptFabric::with_controller(VMInterruptMode::Emulated, sink, ops).unwrap();
+    let message = MsiMessage {
+        address: 0xfee0_0000,
+        data: 0x41,
+    };
+    let route = MsiRoute {
+        message,
+        target_vcpu: 1,
+        vector: 0x41,
+    };
+
+    assert_eq!(fabric.msi(message), Err(AxError::NotFound));
+    fabric.register_msi_route(route).unwrap();
+    assert_eq!(
+        fabric.register_msi_route(route),
+        Err(AxError::AlreadyExists)
+    );
+    fabric.msi(message).unwrap();
+
+    assert_eq!(controller.msi.lock().unwrap().as_slice(), &[route]);
 }
 
 #[test]

@@ -85,11 +85,11 @@
 
 extern crate alloc;
 
+mod bus;
 mod device;
 mod irq;
-mod bus;
-mod resource;
 mod lifecycle;
+mod resource;
 
 use alloc::sync::Arc;
 use core::any::Any;
@@ -99,15 +99,15 @@ pub use axvm_types::{
     EmulatedDeviceType as EmuDeviceType, GuestPhysAddr, GuestPhysAddrRange, InterruptTriggerMode,
     IrqLineId,
 };
+pub use bus::{BusAccess, BusAddress, BusOperation, BusResponse, DeviceError};
 pub use device::{
     AccessWidth, DeviceAddr, DeviceAddrRange, Port, PortRange, SysRegAddr, SysRegAddrRange,
 };
 pub use irq::{IrqLine, IrqSink};
-pub use bus::{BusAccess, BusAddress, BusOperation, BusResponse, DeviceError};
 pub use lifecycle::DeviceLifecycle;
 pub use resource::{
     BusKind, DeviceCapabilities, DeviceDescriptor, DeviceId, IrqTarget, MsiMessage, PciFunction,
-    Resource, ResourceSet, dma_resource, mmio_resource, port_resource,
+    Resource, ResourceSet, dma_resource, mmio_resource, pci_bar_resource, port_resource,
 };
 
 /// The core trait that all emulated devices must implement.

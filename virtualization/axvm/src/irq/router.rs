@@ -1,6 +1,6 @@
 //! VM interrupt router facade.
 
-use ax_errno::{AxResult, ax_err};
+use ax_errno::AxResult;
 use axdevice_base::{IrqLineId, MsiMessage};
 use axvm_types::{InterruptVector, VCpuId};
 
@@ -43,12 +43,7 @@ pub trait InterruptRouter {
     fn msi(&self, message: MsiMessage) -> AxResult;
 
     /// Broadcasts end-of-interrupt state to the backend.
-    fn eoi_source(
-        &self,
-        vcpu_id: VCpuId,
-        source: IrqSource,
-        vector: InterruptVector,
-    ) -> AxResult;
+    fn eoi_source(&self, vcpu_id: VCpuId, source: IrqSource, vector: InterruptVector) -> AxResult;
 }
 
 impl InterruptRouter for InterruptFabric {
@@ -65,22 +60,10 @@ impl InterruptRouter for InterruptFabric {
     }
 
     fn msi(&self, message: MsiMessage) -> AxResult {
-        ax_err!(
-            Unsupported,
-            format_args!(
-                "MSI message addr={:#x} data={:#x} has no installed route",
-                message.address,
-                message.data
-            )
-        )
+        self.deliver_msi(message)
     }
 
-    fn eoi_source(
-        &self,
-        vcpu_id: VCpuId,
-        _source: IrqSource,
-        vector: InterruptVector,
-    ) -> AxResult {
+    fn eoi_source(&self, vcpu_id: VCpuId, _source: IrqSource, vector: InterruptVector) -> AxResult {
         self.eoi(vcpu_id, vector)
     }
 }

@@ -14,13 +14,13 @@
 
 //! VM-owned interrupt line routing.
 
-use alloc::sync::Arc;
+use alloc::{sync::Arc, vec::Vec};
 
 use ax_errno::{AxResult, ax_err};
+use ax_kspin::SpinNoIrq as Mutex;
 use axdevice::IrqResolver;
-use axdevice_base::{InterruptTriggerMode, IrqLine, IrqLineId, IrqSink};
+use axdevice_base::{InterruptTriggerMode, IrqLine, IrqLineId, IrqSink, MsiMessage};
 use axvm_types::{InterruptVector, VCpuId, VMInterruptMode};
-
 pub use router::{InterruptRouter, IrqSource, MsiRoute};
 
 #[cfg(any(target_arch = "aarch64", test))]
@@ -29,9 +29,9 @@ pub(crate) mod aarch64;
 pub(crate) mod loongarch;
 #[cfg(target_arch = "riscv64")]
 pub(crate) mod riscv;
+mod router;
 #[cfg(target_arch = "x86_64")]
 pub(crate) mod x86;
-mod router;
 
 /// An interrupt routed by a VM interrupt controller and ready for vCPU delivery.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -44,6 +44,11 @@ pub struct PendingInterrupt {
 
 /// Controller operations that require a safe VM or vCPU runtime context.
 pub trait InterruptControllerOps: Send + Sync {
+    /// Inject a routed MSI/MSI-X vector.
+    fn inject_msi(&self, _route: MsiRoute) -> AxResult {
+        ax_err!(Unsupported, "MSI delivery is not supported by this backend")
+    }
+
     /// Process an EOI broadcast from one vCPU.
     fn eoi(&self, vcpu_id: VCpuId, vector: InterruptVector) -> AxResult;
 
@@ -67,15 +72,17 @@ pub struct InterruptFabric {
     mode: VMInterruptMode,
     sink: Option<Arc<dyn IrqSink>>,
     controller: Option<Arc<dyn InterruptControllerOps>>,
+    msi_routes: Mutex<Vec<MsiRoute>>,
 }
 
 impl InterruptFabric {
     /// Creates a fabric without an interrupt backend.
-    pub const fn new(mode: VMInterruptMode) -> Self {
+    pub fn new(mode: VMInterruptMode) -> Self {
         Self {
             mode,
             sink: None,
             controller: None,
+            msi_routes: Mutex::new(Vec::new()),
         }
     }
 
@@ -91,6 +98,7 @@ impl InterruptFabric {
             mode,
             sink: Some(sink),
             controller: None,
+            msi_routes: Mutex::new(Vec::new()),
         })
     }
 
@@ -110,6 +118,7 @@ impl InterruptFabric {
             mode,
             sink: Some(sink),
             controller: Some(controller),
+            msi_routes: Mutex::new(Vec::new()),
         })
     }
 
@@ -161,6 +170,54 @@ impl InterruptFabric {
             return Ok(());
         };
         controller.eoi(vcpu_id, vector)
+    }
+
+    /// Registers one MSI route for this VM.
+    pub fn register_msi_route(&self, route: MsiRoute) -> AxResult {
+        if self.mode == VMInterruptMode::NoIrq {
+            return ax_err!(
+                InvalidInput,
+                "a VM configured with interrupt_mode=no_irq cannot register MSI routes"
+            );
+        }
+        let mut routes = self.msi_routes.lock();
+        if routes
+            .iter()
+            .any(|existing| existing.message == route.message)
+        {
+            return ax_err!(
+                AlreadyExists,
+                format_args!(
+                    "MSI route addr={:#x} data={:#x} is already registered",
+                    route.message.address, route.message.data
+                )
+            );
+        }
+        routes.push(route);
+        Ok(())
+    }
+
+    /// Delivers an MSI message through a registered route.
+    pub fn deliver_msi(&self, message: MsiMessage) -> AxResult {
+        let route = self
+            .msi_routes
+            .lock()
+            .iter()
+            .copied()
+            .find(|route| route.message == message)
+            .ok_or_else(|| {
+                ax_errno::ax_err_type!(
+                    NotFound,
+                    format_args!(
+                        "MSI route addr={:#x} data={:#x} is not registered",
+                        message.address, message.data
+                    )
+                )
+            })?;
+        let Some(controller) = &self.controller else {
+            return ax_err!(Unsupported, "MSI route has no interrupt controller backend");
+        };
+        controller.inject_msi(route)
     }
 
     /// Forwards one host interrupt through this VM's controller backend.

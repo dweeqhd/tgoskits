@@ -4,9 +4,9 @@ use alloc::{sync::Arc, vec::Vec};
 
 use ax_errno::{AxResult, ax_err};
 use axdevice_base::{
-    BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps, BusAccess, BusAddress,
-    BusOperation, BusResponse, DeviceAddrRange, DeviceCapabilities, DeviceDescriptor, DeviceId,
-    Resource, ResourceSet,
+    BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps, BusAccess, BusAddress, BusOperation,
+    BusResponse, DeviceAddrRange, DeviceCapabilities, DeviceDescriptor, DeviceId, Resource,
+    ResourceSet,
 };
 
 /// A registered device descriptor owned by a VM.
@@ -57,6 +57,7 @@ impl DeviceDescriptor for RegisteredDevice {
 pub struct DeviceRegistry {
     next_id: u64,
     devices: Vec<RegisteredDevice>,
+    msi_vector_limit: Option<usize>,
 }
 
 impl DeviceRegistry {
@@ -65,6 +66,16 @@ impl DeviceRegistry {
         Self {
             next_id: 1,
             devices: Vec::new(),
+            msi_vector_limit: None,
+        }
+    }
+
+    /// Creates an empty registry with a maximum number of MSI/MSI-X vectors.
+    pub const fn with_msi_vector_limit(limit: usize) -> Self {
+        Self {
+            next_id: 1,
+            devices: Vec::new(),
+            msi_vector_limit: Some(limit),
         }
     }
 
@@ -127,7 +138,33 @@ impl DeviceRegistry {
             }
         }
 
+        if let Some(limit) = self.msi_vector_limit {
+            let used = self
+                .devices
+                .iter()
+                .flat_map(|device| device.resources.as_slice())
+                .map(msi_vectors)
+                .sum::<usize>();
+            let requested = resources.iter().map(msi_vectors).sum::<usize>();
+            if used.saturating_add(requested) > limit {
+                return ax_err!(
+                    NoMemory,
+                    format_args!(
+                        "MSI vector request {requested} exceeds remaining capacity {}",
+                        limit.saturating_sub(used)
+                    )
+                );
+            }
+        }
+
         Ok(())
+    }
+}
+
+fn msi_vectors(resource: &Resource) -> usize {
+    match resource {
+        Resource::Msi { vectors } => *vectors,
+        _ => 0,
     }
 }
 
@@ -265,10 +302,7 @@ impl BusRouter {
             .ok_or_else(|| ax_errno::ax_err_type!(NotFound, "port I/O device not found"))
     }
 
-    fn find_sysreg(
-        &self,
-        addr: axdevice_base::SysRegAddr,
-    ) -> AxResult<&dyn BaseSysRegDeviceOps> {
+    fn find_sysreg(&self, addr: axdevice_base::SysRegAddr) -> AxResult<&dyn BaseSysRegDeviceOps> {
         self.sysreg
             .iter()
             .map(|(_, device)| device.as_ref())

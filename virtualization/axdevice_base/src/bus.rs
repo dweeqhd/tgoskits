@@ -116,3 +116,17 @@ pub enum DeviceError {
     /// The target architecture or backend does not support the request.
     Unsupported,
 }
+
+impl DeviceError {
+    /// Converts a structured device error into the nearest shared errno kind.
+    pub const fn as_ax_error(self) -> ax_errno::AxError {
+        match self {
+            Self::NotFound => ax_errno::AxError::NotFound,
+            Self::InvalidWidth | Self::ReadOnly | Self::WriteOnly => {
+                ax_errno::AxError::InvalidInput
+            }
+            Self::ResourceConflict => ax_errno::AxError::AddrInUse,
+            Self::Unsupported => ax_errno::AxError::Unsupported,
+        }
+    }
+}

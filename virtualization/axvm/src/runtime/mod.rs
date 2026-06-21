@@ -97,9 +97,16 @@ pub fn stop_vm(vm_id: usize) -> AxResult {
     Ok(())
 }
 
+pub fn suspend_vm(vm_id: usize) -> AxResult {
+    let vm = crate::get_vm_by_id(vm_id).ok_or_else(|| ax_err_type!(NotFound, "VM not found"))?;
+    vm.suspend()?;
+    vcpus::notify_all_vcpus(vm_id);
+    Ok(())
+}
+
 pub fn resume_vm(vm_id: usize) -> AxResult {
     let vm = crate::get_vm_by_id(vm_id).ok_or_else(|| ax_err_type!(NotFound, "VM not found"))?;
-    vm.set_vm_status(crate::VMStatus::Running);
+    vm.resume()?;
     vcpus::notify_all_vcpus(vm_id);
     Ok(())
 }

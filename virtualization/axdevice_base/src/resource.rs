@@ -103,6 +103,8 @@ pub enum Resource {
     PciBar {
         /// BAR index.
         bar: u8,
+        /// Assigned guest physical address, if the BAR is already placed.
+        addr: Option<GuestPhysAddrRange>,
         /// BAR size in bytes.
         size: usize,
         /// Whether the BAR is prefetchable.
@@ -130,7 +132,9 @@ impl Resource {
             Self::Irq { .. } => false,
             Self::Msi { vectors } => *vectors == 0,
             Self::Dma { aperture } => aperture.is_some_and(|range| range.is_empty()),
-            Self::PciBar { size, bar, .. } => *size == 0 || *bar >= 6,
+            Self::PciBar {
+                addr, size, bar, ..
+            } => *size == 0 || *bar >= 6 || addr.is_some_and(|range| range.is_empty()),
         }
     }
 
@@ -153,6 +157,9 @@ impl Resource {
                     aperture: Some(b), ..
                 },
             ) => a.overlaps(*b),
+            (Self::PciBar { addr: Some(a), .. }, Self::PciBar { addr: Some(b), .. }) => {
+                a.overlaps(*b)
+            }
             _ => false,
         }
     }
@@ -258,4 +265,21 @@ pub fn dma_resource(range: Range<usize>) -> Option<Resource> {
     (!gpa_range.is_empty()).then_some(Resource::Dma {
         aperture: Some(gpa_range),
     })
+}
+
+/// Creates a PCI BAR resource. `addr` is optional while firmware or PCI code
+/// is still assigning the final placement.
+pub fn pci_bar_resource(
+    bar: u8,
+    addr: Option<GuestPhysAddrRange>,
+    size: usize,
+    prefetchable: bool,
+) -> Option<Resource> {
+    let resource = Resource::PciBar {
+        bar,
+        addr,
+        size,
+        prefetchable,
+    };
+    (!resource.is_empty_or_invalid()).then_some(resource)
 }

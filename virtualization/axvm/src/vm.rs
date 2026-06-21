@@ -24,7 +24,7 @@ use axdevice::{
     AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceFactoryRegistry,
     register_builtin_factories,
 };
-use axdevice_base::AccessWidth;
+use axdevice_base::{AccessWidth, BusAccess, BusAddress, BusResponse};
 use axvcpu::{AxVCpu, AxVCpuExitReason};
 #[cfg(target_arch = "x86_64")]
 use axvm_types::EmulatedDeviceType;
@@ -89,6 +89,20 @@ fn log_device_access_result<T>(
         );
     }
     result
+}
+
+fn expect_bus_read(response: BusResponse) -> AxResult<usize> {
+    match response {
+        BusResponse::Read { value } => Ok(value),
+        BusResponse::WriteComplete => ax_err!(InvalidInput, "bus read returned write response"),
+    }
+}
+
+fn expect_bus_write(response: BusResponse) -> AxResult {
+    match response {
+        BusResponse::WriteComplete => Ok(()),
+        BusResponse::Read { .. } => ax_err!(InvalidInput, "bus write returned read response"),
+    }
 }
 
 struct AxVMInnerConst {
@@ -634,12 +648,39 @@ impl AxVM {
             ax_err!(BadState, format!("VM[{}] is already stopped", self.id()))
         } else {
             info!("Shutting down VM[{}]", self.id());
+            self.get_devices().suspend_devices()?;
             self.set_vm_status(VMStatus::Stopping);
             Ok(())
         }
     }
 
-    // TODO: implement suspend/resume.
+    /// Suspends the VM and all lifecycle-aware devices.
+    pub fn suspend(&self) -> AxResult {
+        if !self.running() {
+            return ax_err!(BadState, format!("VM[{}] is not running", self.id()));
+        }
+        info!("Suspending VM[{}]", self.id());
+        self.get_devices().suspend_devices()?;
+        self.set_vm_status(VMStatus::Suspended);
+        Ok(())
+    }
+
+    /// Resumes the VM and all lifecycle-aware devices.
+    pub fn resume(&self) -> AxResult {
+        if !self.suspending() {
+            return ax_err!(BadState, format!("VM[{}] is not suspended", self.id()));
+        }
+        info!("Resuming VM[{}]", self.id());
+        self.get_devices().resume_devices()?;
+        self.set_vm_status(VMStatus::Running);
+        Ok(())
+    }
+
+    /// Resets lifecycle-aware devices without changing vCPU or address-space state.
+    pub fn reset_devices(&self) -> AxResult {
+        self.get_devices().reset_devices()
+    }
+
     // TODO: implement re-init.
 
     /// Returns this VM's emulated devices.
@@ -693,7 +734,9 @@ impl AxVM {
                             addr,
                             true,
                             width,
-                            self.get_devices().handle_mmio_read(addr, width),
+                            self.get_devices()
+                                .handle_bus_access(BusAccess::read(BusAddress::Mmio(addr), width))
+                                .and_then(expect_bus_read),
                         )?;
                         let masked = raw & width_mask(width);
                         let val = if signed_ext {
@@ -712,7 +755,12 @@ impl AxVM {
                             false,
                             width,
                             self.get_devices()
-                                .handle_mmio_write(addr, width, data as usize),
+                                .handle_bus_access(BusAccess::write(
+                                    BusAddress::Mmio(addr),
+                                    width,
+                                    data as usize,
+                                ))
+                                .and_then(expect_bus_write),
                         )?;
                     }
                     AxVCpuExitReason::IoRead { port, width } => {
@@ -723,7 +771,9 @@ impl AxVM {
                             port,
                             true,
                             width,
-                            self.get_devices().handle_port_read(port, width),
+                            self.get_devices()
+                                .handle_bus_access(BusAccess::read(BusAddress::Port(port), width))
+                                .and_then(expect_bus_read),
                         )?;
                         #[cfg(not(target_arch = "riscv64"))]
                         vcpu.set_gpr(0, val); // The target is always eax/ax/al, todo: handle access_width correctly
@@ -740,7 +790,12 @@ impl AxVM {
                             false,
                             width,
                             self.get_devices()
-                                .handle_port_write(port, width, data as usize),
+                                .handle_bus_access(BusAccess::write(
+                                    BusAddress::Port(port),
+                                    width,
+                                    data as usize,
+                                ))
+                                .and_then(expect_bus_write),
                         )?;
                     }
                     AxVCpuExitReason::SysRegRead { addr, reg } => {
@@ -751,12 +806,15 @@ impl AxVM {
                             addr,
                             true,
                             AccessWidth::Qword,
-                            self.get_devices().handle_sys_reg_read(
-                                addr,
-                                // Generally speaking, the width of system register is fixed and needless to be specified.
-                                // AccessWidth::Qword here is just a placeholder, may be changed in the future.
-                                AccessWidth::Qword,
-                            ),
+                            // Generally speaking, the width of system register is fixed and
+                            // needless to be specified. AccessWidth::Qword here is just a
+                            // placeholder, may be changed in the future.
+                            self.get_devices()
+                                .handle_bus_access(BusAccess::read(
+                                    BusAddress::SysReg(addr),
+                                    AccessWidth::Qword,
+                                ))
+                                .and_then(expect_bus_read),
                         )?;
                         vcpu.set_gpr(reg, val);
                     }
@@ -768,11 +826,13 @@ impl AxVM {
                             addr,
                             false,
                             AccessWidth::Qword,
-                            self.get_devices().handle_sys_reg_write(
-                                addr,
-                                AccessWidth::Qword,
-                                value as usize,
-                            ),
+                            self.get_devices()
+                                .handle_bus_access(BusAccess::write(
+                                    BusAddress::SysReg(addr),
+                                    AccessWidth::Qword,
+                                    value as usize,
+                                ))
+                                .and_then(expect_bus_write),
                         )?;
                     }
                     AxVCpuExitReason::NestedPageFault { addr, access_flags } => {

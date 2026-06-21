@@ -18,12 +18,13 @@ use ax_errno::{AxError, AxResult};
 use ax_memory_addr::{PhysAddr, VirtAddr};
 use axdevice::{
     AxVmDeviceConfig, AxVmDevices, DeviceBuildContext, DeviceBundle, DeviceFactory,
-    DeviceFactoryRegistry, DeviceRegistration, IrqResolver, PollableDeviceOps,
-    register_builtin_factories,
+    DeviceFactoryRegistry, DeviceRegistration, DeviceRegistry, IrqResolver, PollableDeviceOps,
+    RegisteredDevice, register_builtin_factories,
 };
 use axdevice_base::{
-    AccessWidth, BaseDeviceOps, InterruptTriggerMode, IrqLine, Port, PortRange, SysRegAddr,
-    SysRegAddrRange,
+    AccessWidth, BaseDeviceOps, BusAccess, BusAddress, BusResponse, DeviceCapabilities, DeviceId,
+    InterruptTriggerMode, IrqLine, IrqLineId, IrqTarget, Port, PortRange, Resource, ResourceSet,
+    SysRegAddr, SysRegAddrRange, dma_resource, pci_bar_resource,
 };
 use axvm_types::{
     EmulatedDeviceConfig, EmulatedDeviceType, GuestPhysAddr, GuestPhysAddrRange, InterruptVector,
@@ -277,6 +278,57 @@ fn test_mmio_dispatch_functionality() {
         .expect("MMIO read failed");
 
     assert_eq!(read_result, 0xDEAD_BEEF, "Read value mismatch");
+}
+
+#[test]
+fn test_unified_bus_access_dispatches_mmio_port_and_sysreg() {
+    let mut devices = empty_devices();
+    devices
+        .add_mmio_dev(mmio_device("mmio", 0x1000, 0x2000))
+        .unwrap();
+    devices
+        .add_port_dev(Arc::new(MockPortDevice::new(0x3f8, 0x3ff)))
+        .unwrap();
+    devices
+        .add_sys_reg_dev(Arc::new(MockSysRegDevice::new(0x100, 0x110)))
+        .unwrap();
+    let width = AccessWidth::try_from(4).unwrap();
+
+    assert_eq!(
+        devices.handle_bus_access(BusAccess::read(
+            BusAddress::Mmio(GuestPhysAddr::from(0x1000)),
+            width
+        )),
+        Ok(BusResponse::Read { value: 0xDEAD_BEEF })
+    );
+    assert_eq!(
+        devices.handle_bus_access(BusAccess::write(
+            BusAddress::Port(Port::new(0x3f8)),
+            width,
+            0x55
+        )),
+        Ok(BusResponse::WriteComplete)
+    );
+    assert_eq!(
+        devices.handle_bus_access(BusAccess::read(
+            BusAddress::SysReg(SysRegAddr::new(0x100)),
+            width
+        )),
+        Ok(BusResponse::Read { value: 0 })
+    );
+    assert_eq!(
+        devices.handle_bus_access(BusAccess::read(
+            BusAddress::PciConfig {
+                segment: 0,
+                bus: 0,
+                device: 0,
+                function: 0,
+                offset: 0,
+            },
+            width
+        )),
+        Err(AxError::Unsupported)
+    );
 }
 
 #[test]
@@ -770,6 +822,90 @@ fn test_duplicate_ivc_channel_config_is_rejected_atomically() {
         .err(),
         Some(AxError::AlreadyExists)
     );
+}
+
+#[test]
+fn test_device_registry_rejects_irq_pci_bar_dma_and_msi_conflicts() {
+    let mut registry = DeviceRegistry::with_msi_vector_limit(4);
+    let first_bar = pci_bar_resource(
+        0,
+        Some(GuestPhysAddrRange::new(0x1000.into(), 0x2000.into())),
+        0x1000,
+        false,
+    )
+    .unwrap();
+    let first = RegisteredDevice::new(
+        DeviceId::new(1),
+        "first",
+        ResourceSet::new()
+            .with(first_bar)
+            .with(Resource::Dma {
+                aperture: Some(GuestPhysAddrRange::new(0x4000.into(), 0x5000.into())),
+            })
+            .with(Resource::Irq {
+                line: IrqLineId(5),
+                trigger: InterruptTriggerMode::LevelTriggered,
+                target: IrqTarget::Bootstrap,
+            })
+            .with(Resource::Msi { vectors: 2 }),
+        DeviceCapabilities {
+            dma: true,
+            msi: true,
+            ..DeviceCapabilities::default()
+        },
+    );
+    registry.register(first).unwrap();
+
+    let bar_overlap = RegisteredDevice::new(
+        DeviceId::new(2),
+        "bar-overlap",
+        ResourceSet::new().with(
+            pci_bar_resource(
+                0,
+                Some(GuestPhysAddrRange::new(0x1800.into(), 0x2800.into())),
+                0x1000,
+                false,
+            )
+            .unwrap(),
+        ),
+        DeviceCapabilities::default(),
+    );
+    assert_eq!(registry.register(bar_overlap), Err(AxError::AddrInUse));
+
+    let dma_overlap = RegisteredDevice::new(
+        DeviceId::new(3),
+        "dma-overlap",
+        ResourceSet::new().with(dma_resource(0x4800..0x5800).expect("valid test DMA aperture")),
+        DeviceCapabilities {
+            dma: true,
+            ..DeviceCapabilities::default()
+        },
+    );
+    assert_eq!(registry.register(dma_overlap), Err(AxError::AddrInUse));
+
+    let irq_duplicate = RegisteredDevice::new(
+        DeviceId::new(4),
+        "irq-duplicate",
+        ResourceSet::new().with(Resource::Irq {
+            line: IrqLineId(5),
+            trigger: InterruptTriggerMode::EdgeTriggered,
+            target: IrqTarget::Bootstrap,
+        }),
+        DeviceCapabilities::default(),
+    );
+    assert_eq!(registry.register(irq_duplicate), Err(AxError::AddrInUse));
+
+    let too_many_msi = RegisteredDevice::new(
+        DeviceId::new(5),
+        "too-many-msi",
+        ResourceSet::new().with(Resource::Msi { vectors: 3 }),
+        DeviceCapabilities {
+            msi: true,
+            ..DeviceCapabilities::default()
+        },
+    );
+    assert_eq!(registry.register(too_many_msi), Err(AxError::NoMemory));
+    assert_eq!(registry.devices().len(), 1);
 }
 
 // Mock implementation for x86_vlapic host callbacks when running

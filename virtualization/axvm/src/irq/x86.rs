@@ -28,7 +28,7 @@ use axvm_types::{
 };
 use x86_vlapic::{EmulatedIoApic, EmulatedPit, EmulatedSerialPort, IoApicInterrupt};
 
-use super::{InterruptControllerOps, InterruptFabric, PendingInterrupt};
+use super::{InterruptControllerOps, InterruptFabric, MsiRoute, PendingInterrupt};
 
 pub(crate) const HOST_IOAPIC_VECTOR_BASE: usize = 0x20;
 pub(crate) const HOST_IOAPIC_GSI_COUNT: usize = x86_vlapic::IOAPIC_GSI_COUNT;
@@ -112,6 +112,17 @@ impl IrqSink for X86InterruptBackend {
 }
 
 impl InterruptControllerOps for X86InterruptBackend {
+    fn inject_msi(&self, route: MsiRoute) -> AxResult {
+        self.pending.lock().push_back(QueuedInterrupt {
+            vcpu_id: route.target_vcpu,
+            interrupt: PendingInterrupt {
+                vector: route.vector,
+                trigger: InterruptTriggerMode::EdgeTriggered,
+            },
+        });
+        Ok(())
+    }
+
     fn eoi(&self, vcpu_id: VCpuId, vector: InterruptVector) -> AxResult {
         self.queue_routed(vcpu_id, self.ioapic.end_of_interrupt(vector));
         Ok(())
@@ -346,7 +357,7 @@ mod tests {
     use alloc::{vec, vec::Vec};
 
     use ax_errno::AxError;
-    use axdevice_base::{AccessWidth, BaseDeviceOps};
+    use axdevice_base::{AccessWidth, BaseDeviceOps, MsiMessage};
     use axvm_types::GuestPhysAddr;
 
     use super::*;
@@ -422,6 +433,45 @@ mod tests {
             .unwrap();
         assert_eq!(delivered.len(), 1);
         assert_eq!(delivered[0].vector, 0x3a);
+    }
+
+    #[test]
+    fn msi_route_queues_target_vector() {
+        let backend = X86InterruptBackend::new(Arc::new(EmulatedIoApic::new_default()));
+        backend
+            .inject_msi(MsiRoute {
+                message: MsiMessage {
+                    address: 0xfee0_0000,
+                    data: 0x45,
+                },
+                target_vcpu: 1,
+                vector: 0x45,
+            })
+            .unwrap();
+
+        let mut delivered_bsp = Vec::new();
+        backend
+            .drain_pending(BSP_VCPU_ID, &mut |interrupt| {
+                delivered_bsp.push(interrupt);
+                Ok(())
+            })
+            .unwrap();
+        assert!(delivered_bsp.is_empty());
+
+        let mut delivered_target = Vec::new();
+        backend
+            .drain_pending(1, &mut |interrupt| {
+                delivered_target.push(interrupt);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            delivered_target,
+            vec![PendingInterrupt {
+                vector: 0x45,
+                trigger: InterruptTriggerMode::EdgeTriggered,
+            }]
+        );
     }
 
     #[test]

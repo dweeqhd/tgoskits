@@ -20,7 +20,8 @@ use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::is_aligned_4k;
 use axdevice_base::{
     AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps,
-    DeviceAddrRange, DeviceLifecycle, Port, PortRange, SysRegAddr, SysRegAddrRange,
+    BusAccess, BusAddress, BusOperation, BusResponse, DeviceAddrRange, DeviceLifecycle, Port,
+    PortRange, SysRegAddr, SysRegAddrRange,
 };
 use axvm_types::{EmulatedDeviceConfig, GuestPhysAddr, GuestPhysAddrRange};
 
@@ -338,7 +339,8 @@ impl AxVmDevices {
             {
                 return ax_err!(
                     AlreadyExists,
-                    "failed to register lifecycle device: the same capability is already registered"
+                    "failed to register lifecycle device: the same capability is already \
+                     registered"
                 );
             }
         }
@@ -446,14 +448,110 @@ impl AxVmDevices {
         Ok(())
     }
 
-    /// Handle the MMIO read by GuestPhysAddr and data width, return the value of the guest want to read
-    pub fn handle_mmio_read(&self, addr: GuestPhysAddr, width: AccessWidth) -> AxResult<usize> {
+    /// Dispatches a normalized bus transaction.
+    pub fn handle_bus_access(&self, access: BusAccess) -> AxResult<BusResponse> {
+        match (access.address, access.operation) {
+            (BusAddress::Mmio(addr), BusOperation::Read) => self
+                .dispatch_mmio_read(addr, access.width)
+                .map(|value| BusResponse::Read { value }),
+            (BusAddress::Mmio(addr), BusOperation::Write { value }) => {
+                self.dispatch_mmio_write(addr, access.width, value)?;
+                Ok(BusResponse::WriteComplete)
+            }
+            (BusAddress::Port(port), BusOperation::Read) => self
+                .dispatch_port_read(port, access.width)
+                .map(|value| BusResponse::Read { value }),
+            (BusAddress::Port(port), BusOperation::Write { value }) => {
+                self.dispatch_port_write(port, access.width, value)?;
+                Ok(BusResponse::WriteComplete)
+            }
+            (BusAddress::SysReg(addr), BusOperation::Read) => self
+                .dispatch_sys_reg_read(addr, access.width)
+                .map(|value| BusResponse::Read { value }),
+            (BusAddress::SysReg(addr), BusOperation::Write { value }) => {
+                self.dispatch_sys_reg_write(addr, access.width, value)?;
+                Ok(BusResponse::WriteComplete)
+            }
+            (BusAddress::PciConfig { .. }, _) => ax_err!(
+                Unsupported,
+                "PCI config space routing is not installed for this VM"
+            ),
+        }
+    }
+
+    fn expect_read_response(response: BusResponse) -> AxResult<usize> {
+        match response {
+            BusResponse::Read { value } => Ok(value),
+            BusResponse::WriteComplete => ax_err!(InvalidInput, "bus read returned write response"),
+        }
+    }
+
+    fn expect_write_response(response: BusResponse) -> AxResult {
+        match response {
+            BusResponse::WriteComplete => Ok(()),
+            BusResponse::Read { .. } => ax_err!(InvalidInput, "bus write returned read response"),
+        }
+    }
+
+    fn dispatch_mmio_read(&self, addr: GuestPhysAddr, width: AccessWidth) -> AxResult<usize> {
         if let Some(emu_dev) = self.emu_mmio_devices.find_dev(addr) {
             log_device_io("mmio", addr, emu_dev.address_range(), true, width);
 
             return emu_dev.handle_read(addr, width);
         }
         device_not_found("mmio", addr, true, width)
+    }
+
+    fn dispatch_mmio_write(&self, addr: GuestPhysAddr, width: AccessWidth, val: usize) -> AxResult {
+        if let Some(emu_dev) = self.emu_mmio_devices.find_dev(addr) {
+            log_device_io("mmio", addr, emu_dev.address_range(), false, width);
+
+            return emu_dev.handle_write(addr, width, val);
+        }
+        device_not_found("mmio", addr, false, width)
+    }
+
+    fn dispatch_sys_reg_read(&self, addr: SysRegAddr, width: AccessWidth) -> AxResult<usize> {
+        if let Some(emu_dev) = self.emu_sys_reg_devices.find_dev(addr) {
+            log_device_io("sys_reg", addr.0, emu_dev.address_range(), true, width);
+
+            return emu_dev.handle_read(addr, width);
+        }
+        device_not_found("sys_reg", addr, true, width)
+    }
+
+    fn dispatch_sys_reg_write(&self, addr: SysRegAddr, width: AccessWidth, val: usize) -> AxResult {
+        if let Some(emu_dev) = self.emu_sys_reg_devices.find_dev(addr) {
+            log_device_io("sys_reg", addr.0, emu_dev.address_range(), false, width);
+
+            return emu_dev.handle_write(addr, width, val);
+        }
+        device_not_found("sys_reg", addr, false, width)
+    }
+
+    fn dispatch_port_read(&self, port: Port, width: AccessWidth) -> AxResult<usize> {
+        if let Some(emu_dev) = self.emu_port_devices.find_dev(port) {
+            log_device_io("port", port.0, emu_dev.address_range(), true, width);
+
+            return emu_dev.handle_read(port, width);
+        }
+        device_not_found("port", port, true, width)
+    }
+
+    fn dispatch_port_write(&self, port: Port, width: AccessWidth, val: usize) -> AxResult {
+        if let Some(emu_dev) = self.emu_port_devices.find_dev(port) {
+            log_device_io("port", port.0, emu_dev.address_range(), false, width);
+
+            return emu_dev.handle_write(port, width, val);
+        }
+        device_not_found("port", port, false, width)
+    }
+
+    /// Handle the MMIO read by GuestPhysAddr and data width, return the value of the guest want to read
+    pub fn handle_mmio_read(&self, addr: GuestPhysAddr, width: AccessWidth) -> AxResult<usize> {
+        Self::expect_read_response(
+            self.handle_bus_access(BusAccess::read(BusAddress::Mmio(addr), width))?,
+        )
     }
 
     /// Handle the MMIO write by GuestPhysAddr, data width and the value need to write, call specific device to write the value
@@ -463,22 +561,18 @@ impl AxVmDevices {
         width: AccessWidth,
         val: usize,
     ) -> AxResult {
-        if let Some(emu_dev) = self.emu_mmio_devices.find_dev(addr) {
-            log_device_io("mmio", addr, emu_dev.address_range(), false, width);
-
-            return emu_dev.handle_write(addr, width, val);
-        }
-        device_not_found("mmio", addr, false, width)
+        Self::expect_write_response(self.handle_bus_access(BusAccess::write(
+            BusAddress::Mmio(addr),
+            width,
+            val,
+        ))?)
     }
 
     /// Handle the system register read by SysRegAddr and data width, return the value of the guest want to read
     pub fn handle_sys_reg_read(&self, addr: SysRegAddr, width: AccessWidth) -> AxResult<usize> {
-        if let Some(emu_dev) = self.emu_sys_reg_devices.find_dev(addr) {
-            log_device_io("sys_reg", addr.0, emu_dev.address_range(), true, width);
-
-            return emu_dev.handle_read(addr, width);
-        }
-        device_not_found("sys_reg", addr, true, width)
+        Self::expect_read_response(
+            self.handle_bus_access(BusAccess::read(BusAddress::SysReg(addr), width))?,
+        )
     }
 
     /// Handle the system register write by SysRegAddr, data width and the value need to write, call specific device to write the value
@@ -488,31 +582,26 @@ impl AxVmDevices {
         width: AccessWidth,
         val: usize,
     ) -> AxResult {
-        if let Some(emu_dev) = self.emu_sys_reg_devices.find_dev(addr) {
-            log_device_io("sys_reg", addr.0, emu_dev.address_range(), false, width);
-
-            return emu_dev.handle_write(addr, width, val);
-        }
-        device_not_found("sys_reg", addr, false, width)
+        Self::expect_write_response(self.handle_bus_access(BusAccess::write(
+            BusAddress::SysReg(addr),
+            width,
+            val,
+        ))?)
     }
 
     /// Handle the port read by port number and data width, return the value of the guest want to read
     pub fn handle_port_read(&self, port: Port, width: AccessWidth) -> AxResult<usize> {
-        if let Some(emu_dev) = self.emu_port_devices.find_dev(port) {
-            log_device_io("port", port.0, emu_dev.address_range(), true, width);
-
-            return emu_dev.handle_read(port, width);
-        }
-        device_not_found("port", port, true, width)
+        Self::expect_read_response(
+            self.handle_bus_access(BusAccess::read(BusAddress::Port(port), width))?,
+        )
     }
 
     /// Handle the port write by port number, data width and the value need to write, call specific device to write the value
     pub fn handle_port_write(&self, port: Port, width: AccessWidth, val: usize) -> AxResult {
-        if let Some(emu_dev) = self.emu_port_devices.find_dev(port) {
-            log_device_io("port", port.0, emu_dev.address_range(), false, width);
-
-            return emu_dev.handle_write(port, width, val);
-        }
-        device_not_found("port", port, false, width)
+        Self::expect_write_response(self.handle_bus_access(BusAccess::write(
+            BusAddress::Port(port),
+            width,
+            val,
+        ))?)
     }
 }
