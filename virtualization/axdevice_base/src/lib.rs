@@ -89,6 +89,7 @@ mod device;
 mod irq;
 mod bus;
 mod resource;
+mod lifecycle;
 
 use alloc::sync::Arc;
 use core::any::Any;
@@ -103,6 +104,7 @@ pub use device::{
 };
 pub use irq::{IrqLine, IrqSink};
 pub use bus::{BusAccess, BusAddress, BusOperation, BusResponse, DeviceError};
+pub use lifecycle::DeviceLifecycle;
 pub use resource::{
     BusKind, DeviceCapabilities, DeviceDescriptor, DeviceId, IrqTarget, MsiMessage, PciFunction,
     Resource, ResourceSet, dma_resource, mmio_resource, port_resource,

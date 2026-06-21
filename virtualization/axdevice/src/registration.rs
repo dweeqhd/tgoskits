@@ -18,7 +18,9 @@ use alloc::{sync::Arc, vec::Vec};
 use core::ops::Range;
 
 use ax_errno::AxResult;
-use axdevice_base::{BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps};
+use axdevice_base::{
+    BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps, DeviceLifecycle,
+};
 
 /// A device capability that can be polled by the VM runtime.
 pub trait PollableDeviceOps: Send + Sync {
@@ -37,6 +39,8 @@ pub enum DeviceRegistration {
     SysReg(Arc<dyn BaseSysRegDeviceOps>),
     /// A capability that requires periodic polling.
     Pollable(Arc<dyn PollableDeviceOps>),
+    /// A lifecycle capability used by VM reset, suspend, and resume.
+    Lifecycle(Arc<dyn DeviceLifecycle>),
     /// An IVC channel guest physical address range.
     IvcChannel(Range<usize>),
 }
@@ -51,6 +55,7 @@ pub struct DeviceBundle {
     pub(crate) port: Vec<Arc<dyn BasePortDeviceOps>>,
     pub(crate) sysreg: Vec<Arc<dyn BaseSysRegDeviceOps>>,
     pub(crate) pollable: Vec<Arc<dyn PollableDeviceOps>>,
+    pub(crate) lifecycle: Vec<Arc<dyn DeviceLifecycle>>,
     pub(crate) ivc_channels: Vec<Range<usize>>,
 }
 
@@ -62,6 +67,7 @@ impl DeviceBundle {
             port: Vec::new(),
             sysreg: Vec::new(),
             pollable: Vec::new(),
+            lifecycle: Vec::new(),
             ivc_channels: Vec::new(),
         }
     }
@@ -80,6 +86,7 @@ impl DeviceBundle {
             DeviceRegistration::Port(device) => self.port.push(device),
             DeviceRegistration::SysReg(device) => self.sysreg.push(device),
             DeviceRegistration::Pollable(device) => self.pollable.push(device),
+            DeviceRegistration::Lifecycle(device) => self.lifecycle.push(device),
             DeviceRegistration::IvcChannel(range) => self.ivc_channels.push(range),
         }
     }
@@ -96,6 +103,7 @@ impl DeviceBundle {
             && self.port.is_empty()
             && self.sysreg.is_empty()
             && self.pollable.is_empty()
+            && self.lifecycle.is_empty()
             && self.ivc_channels.is_empty()
     }
 }

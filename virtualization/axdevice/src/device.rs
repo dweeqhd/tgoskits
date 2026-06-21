@@ -20,7 +20,7 @@ use ax_kspin::SpinNoIrq as Mutex;
 use ax_memory_addr::is_aligned_4k;
 use axdevice_base::{
     AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps,
-    DeviceAddrRange, Port, PortRange, SysRegAddr, SysRegAddrRange,
+    DeviceAddrRange, DeviceLifecycle, Port, PortRange, SysRegAddr, SysRegAddrRange,
 };
 use axvm_types::{EmulatedDeviceConfig, GuestPhysAddr, GuestPhysAddrRange};
 
@@ -175,6 +175,7 @@ pub struct AxVmDevices {
     emu_sys_reg_devices: AxEmuSysRegDevices,
     emu_port_devices: AxEmuPortDevices,
     pollable_devices: Vec<Arc<dyn PollableDeviceOps>>,
+    lifecycle_devices: Vec<Arc<dyn DeviceLifecycle>>,
     /// IVC channel range allocator
     ivc_channel: Option<Mutex<RangeAllocator>>,
 }
@@ -216,6 +217,7 @@ impl AxVmDevices {
             emu_sys_reg_devices: AxEmuSysRegDevices::new(),
             emu_port_devices: AxEmuPortDevices::new(),
             pollable_devices: Vec::new(),
+            lifecycle_devices: Vec::new(),
             ivc_channel: None,
         }
     }
@@ -327,10 +329,25 @@ impl AxVmDevices {
             }
         }
 
+        for (index, lifecycle) in bundle.lifecycle.iter().enumerate() {
+            if self
+                .lifecycle_devices
+                .iter()
+                .chain(bundle.lifecycle[..index].iter())
+                .any(|existing| Arc::ptr_eq(existing, lifecycle))
+            {
+                return ax_err!(
+                    AlreadyExists,
+                    "failed to register lifecycle device: the same capability is already registered"
+                );
+            }
+        }
+
         self.emu_mmio_devices.commit_devices(bundle.mmio);
         self.emu_port_devices.commit_devices(bundle.port);
         self.emu_sys_reg_devices.commit_devices(bundle.sysreg);
         self.pollable_devices.extend(bundle.pollable);
+        self.lifecycle_devices.extend(bundle.lifecycle);
         for range in bundle.ivc_channels {
             info!(
                 "IVCChannel initialized with base GPA {base_gpa:#x} and length {length:#x}",
@@ -398,6 +415,35 @@ impl AxVmDevices {
     /// Iterates over devices that require periodic polling.
     pub fn iter_pollable_dev(&self) -> impl Iterator<Item = &Arc<dyn PollableDeviceOps>> {
         self.pollable_devices.iter()
+    }
+
+    /// Iterates over registered lifecycle capabilities.
+    pub fn iter_lifecycle_dev(&self) -> impl Iterator<Item = &Arc<dyn DeviceLifecycle>> {
+        self.lifecycle_devices.iter()
+    }
+
+    /// Resets all lifecycle-aware devices in registration order.
+    pub fn reset_devices(&self) -> AxResult {
+        for device in &self.lifecycle_devices {
+            device.reset()?;
+        }
+        Ok(())
+    }
+
+    /// Suspends all lifecycle-aware devices in registration order.
+    pub fn suspend_devices(&self) -> AxResult {
+        for device in &self.lifecycle_devices {
+            device.suspend()?;
+        }
+        Ok(())
+    }
+
+    /// Resumes all lifecycle-aware devices in reverse registration order.
+    pub fn resume_devices(&self) -> AxResult {
+        for device in self.lifecycle_devices.iter().rev() {
+            device.resume()?;
+        }
+        Ok(())
     }
 
     /// Handle the MMIO read by GuestPhysAddr and data width, return the value of the guest want to read

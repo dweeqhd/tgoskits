@@ -35,7 +35,7 @@ mod router;
 
 pub use axdevice_base::{
     AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps, Port,
-    SysRegAddr,
+    DeviceLifecycle, SysRegAddr,
 };
 pub use axvm_types::GuestPhysAddr;
 pub use config::AxVmDeviceConfig;
