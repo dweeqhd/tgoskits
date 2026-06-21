@@ -31,6 +31,7 @@ mod device;
 mod factory;
 mod range_alloc;
 mod registration;
+mod router;
 
 pub use axdevice_base::{
     AccessWidth, BaseDeviceOps, BaseMmioDeviceOps, BasePortDeviceOps, BaseSysRegDeviceOps, Port,
@@ -44,4 +45,5 @@ pub use factory::{
     register_builtin_factories,
 };
 pub use registration::{DeviceBundle, DeviceRegistration, PollableDeviceOps};
+pub use router::{BusRouter, DeviceRegistry, RegisteredDevice};
 // pub use virtio_dev::*;

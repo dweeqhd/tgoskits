@@ -87,6 +87,8 @@ extern crate alloc;
 
 mod device;
 mod irq;
+mod bus;
+mod resource;
 
 use alloc::sync::Arc;
 use core::any::Any;
@@ -100,6 +102,11 @@ pub use device::{
     AccessWidth, DeviceAddr, DeviceAddrRange, Port, PortRange, SysRegAddr, SysRegAddrRange,
 };
 pub use irq::{IrqLine, IrqSink};
+pub use bus::{BusAccess, BusAddress, BusOperation, BusResponse, DeviceError};
+pub use resource::{
+    BusKind, DeviceCapabilities, DeviceDescriptor, DeviceId, IrqTarget, MsiMessage, PciFunction,
+    Resource, ResourceSet, dma_resource, mmio_resource, port_resource,
+};
 
 /// The core trait that all emulated devices must implement.
 ///
